@@ -1,0 +1,27 @@
+Package: survbayes
+Type: Package
+Title: Tools for bayesian survival-regression, with Stan and MAP
+Version: 0.1.0
+Authors@R: c(
+	person("Jacob", "Dink", email = "jacobwdink@gmail.com", role = c("aut", "cre"))
+	)
+Maintainer@R: c(
+	person("Jacob", "Dink", email = "jacobwdink@gmail.com", role = c("aut", "cre"))
+	)
+Description: Tools for bayesian survival-regression, with Stan and MAP
+License: MIT + file LICENCE
+LazyData: TRUE
+RoxygenNote: 6.0.1
+Imports:
+  dplyr (>= 0.4.3),
+  stringr (>= 1.1.0),
+  lazyeval (>= 0.2.0),
+  tidyr (>= 0.6.0),
+  ggplot2 (>= 2.1.0),
+  broom (>= 0.4.2),
+  purrr (>= 0.2.2),
+  tibble (>= 1.2),
+  glue (>= 1.0.0)
+Depends:
+  survival (>= 2.40-1)
+Suggests: testthat
