@@ -43,6 +43,7 @@ NULL
 #' @return A list with needed components, such as model.frame/mats, response object, and info for
 #'   subsequent calls (params for standardizing).
 prep_model_components <- function(formula_concat, forms, data, na.action, xlev, standardize_y) {
+
   model_frame <- model.frame(formula = formula_concat, data = data, na.action = na.action, drop.unused.levels = TRUE, xlev = xlev)
   xlevels <- .getXlevels(attr(model_frame, "terms"), model_frame)
   form_terms <- purrr::map(forms, ~delete.response(terms(.x, data=data)) )
@@ -75,20 +76,24 @@ prep_model_components <- function(formula_concat, forms, data, na.action, xlev, 
   })
 
   y <- model.extract(model_frame, "response")
-  if (class(y)[1] == 'Surv') {
-    # need to add support for non-interval censoring. will need dbasis
-    stop(call. = FALSE, "Please report this error to the package maintainer.")
-  } else if (class(y)[1] == 'Survint') {
-    if (is.logical(standardize_y) && standardize_y)
-      standardize_y <- list(center = mean(log(y[,3,drop=TRUE]), na.rm=TRUE),
-                            scale = sd(log(y[,3,drop=TRUE]), na.rm = TRUE) )
-    if (is.list(standardize_y)) {
-      y[,-4] <- exp(scale(x = log(y[,-4,drop=FALSE]), center = rep(standardize_y$center,3), scale = rep(standardize_y$scale,3)))
+  if (!is.null(y)) {
+    if (class(y)[1] == 'Surv') {
+      # need to add support for non-interval censoring. will need dbasis
+      stop(call. = FALSE, "Please report this error to the package maintainer.")
+    } else if (class(y)[1] == 'Survint') {
+      if (is.logical(standardize_y) && standardize_y)
+        standardize_y <- list(center = mean(log(y[,3,drop=TRUE]), na.rm=TRUE),
+                              scale = sd(log(y[,3,drop=TRUE]), na.rm = TRUE) )
+      if (is.list(standardize_y)) {
+        y[,-4] <- exp(scale(x = log(y[,-4,drop=FALSE]), center = rep(standardize_y$center,3), scale = rep(standardize_y$scale,3)))
+      } else {
+        standardize_y <- list(center=0, scale=1)
+      }
     } else {
-      standardize_y <- list(center=0, scale=1)
+      stop(call. = FALSE, "Type of survival-object on formula's left-hand-side not recognized.")
     }
   } else {
-    stop(call. = FALSE, "Type of survival-object on formula's left-hand-side not recognized.")
+    standardize_y <- NULL
   }
 
   list(model_frame = model_frame,
@@ -229,7 +234,6 @@ prep_survreg_data <- function(formula,
 
 }
 
-#' @export
 print.survreg_data <- function(x, title=TRUE, ...) {
   if (title)
   cat(sep = "",
@@ -320,7 +324,7 @@ get_dist_info <- function(dist, k = NULL) {
         priors
       },
 
-      distribution_function_factory = function(all_knots, y, scaling_factor) {
+      distribution_function_factory = function(all_knots, scaling_factor) {
 
         cdf_function <- function(q, gamma, lower.tail = TRUE, log.p =FALSE, b = NULL) {
           invalid_idx <- which(q<=0)
@@ -381,6 +385,70 @@ Survint <- function(end, event, start = NULL, end_lb = NULL) {
 
 
 # SurvReg MAP ---------------------------------------------------------------------------------
+
+terms.survreg_map <- function(object, ...) {
+  terms(object$formula_concat)
+}
+
+#' Predict method for 'survreg_map'
+#'
+#' @param object 'survreg_map' object
+#' @param newdata A data.frame, optional
+#' @param times Only required if type != 'parameters. A vector of times with length 1 or nrow(newdata)
+#' @param starts Optional, for type = 'survival' only. A vector of start/truncation times with length 1 or nrow(newdata). Survival times will be conditional up to survival at this point.
+#' @param type Type of prediction. Can be predicted 'parameters' of the distribution for each row, or 'survival' probabilities (at 'times', given 'starts').
+#'
+#' @return A matrix if type = 'parameters', or a vector if type = 'survival'.
+#' @export
+predict.survreg_map <- function(object, newdata = NULL, times, starts = NULL, type = 'survival') {
+  if (is.null(newdata)) newdata <- object$data
+
+  type <- match.arg(arg = type, choices = c('survival','parameters'))
+
+  object$formula_concat[[2]]<- NULL
+  model_components <- prep_model_components(formula_concat = object$formula_concat,
+                                            forms = object$forms,
+                                            data = newdata,
+                                            na.action = object$na.action,
+                                            xlev = object$xlevels,
+                                            standardize_y = object$log_time_scaling)
+  names(model_components$model_mats) <- object$dist_info$pars_real
+
+  model_mats_std <- map(seq_along(model_components$model_mats),
+                        function(i)
+                          scale(model_components$model_mats[[i]],
+                                center = object$scale_params[[i]]$center,
+                                scale = object$scale_params[[i]]$scale))
+  names(model_mats_std) <- object$dist_info$pars_real
+
+  unrolled_par <- with(object$res_std, structure( estimate, names = paste0(parameter, "__sep__", term)))
+  dist_params <- object$helper_funs$get_distribution_params_from_unrolled_coefs(unrolled_par,
+                                                                                list_of_standardized_model_mats = model_mats_std)
+  dist_params <- as.matrix(dist_params)
+
+  if (length(times)==1)
+    times <- rep(x=times, times=nrow(newdata))
+  if (is.null(starts))
+    starts <- rep(0, length(times))
+  times <- with(object$log_time_scaling, exp( (log(times) - center)/scale ) )
+  starts <- with(object$log_time_scaling, exp( (log(starts) - center)/scale ) )
+
+  if (type == 'parameters')
+    return(dist_params)
+
+  if (!is.null(survreg_data$all_knots)) {
+    if (type == 'survival')
+      surv <- object$helper_funs$distribution_functions$cdf_function(q = times, gamma = dist_params, lower.tail =FALSE)
+    if (any( !near(starts, 0) ))
+      surv_at_start <- object$helper_funs$distribution_functions$cdf_function(q = starts, gamma = dist_params, lower.tail =FALSE)
+    else
+      surv_at_start <- rep(1, length(surv))
+    return(surv/surv_at_start)
+  } else {
+    stop(call. = FALSE, "Please report this error to the package maintainer.")
+  }
+
+}
 
 #' Fit a bayesian survival model using MAP
 #'
@@ -588,14 +656,14 @@ logLik.survreg_map <- function(object, newdata = NULL, ...) {
 coef.survreg_map <- function(object, ...)
   purrr::map(split(object$res, object$res$parameter), ~setNames(.x$estimate, nm = .x$term))
 
-print.survreg_map <- function(x, ...) {
-  cat("\nResults (unstandardized): ====\n")
-  print(x$res)
-
-  cat("\nResults (standardized): ====\n")
-  print(x$res_std)
-  cat("\n")
-  print.survreg_data(x, title=FALSE)
+print.survreg_map <- function(x, standarized = TRUE, ...) {
+  if (standarized) {
+    cat("\nResults (standardized): ====\n")
+    print(x$res_std)
+  } else {
+    cat("\nResults (unstandardized): ====\n")
+    print(x$res)
+  }
 }
 
 plot_coefs.survreg_map <- function(object, standardized=FALSE) {
