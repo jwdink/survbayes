@@ -404,7 +404,7 @@ terms.survreg_map <- function(object, ...) {
 #'
 #' @return A matrix if type = 'parameters', or a vector if type = 'survival'.
 #' @export
-predict.survreg_map <- function(object, newdata = NULL, times, starts = NULL, type = 'survival') {
+predict.survreg_map <- function(object, newdata = NULL, times, starts = NULL, type = 'survival', na.action = na.pass) {
   if (is.null(newdata)) newdata <- object$data
 
   type <- match.arg(arg = type, choices = c('survival','parameters'))
@@ -413,7 +413,7 @@ predict.survreg_map <- function(object, newdata = NULL, times, starts = NULL, ty
   model_components <- prep_model_components(formula_concat = object$formula_concat,
                                             forms = object$forms,
                                             data = newdata,
-                                            na.action = object$na.action,
+                                            na.action = na.action,
                                             xlev = object$xlevels,
                                             standardize_y = object$log_time_scaling)
   names(model_components$model_mats) <- object$dist_info$pars_real
@@ -437,10 +437,16 @@ predict.survreg_map <- function(object, newdata = NULL, times, starts = NULL, ty
   times <- with(object$log_time_scaling, exp( (log(times) - center)/scale ) )
   starts <- with(object$log_time_scaling, exp( (log(starts) - center)/scale ) )
 
+  na_dropped_idx <- attr(model_components$model_frame,'na.action')
+  if (length(na_dropped_idx)>0) {
+    times <- times[-na_dropped_idx]
+    starts <- starts[-na_dropped_idx]
+  }
+
   if (type == 'parameters')
     return(dist_params)
 
-  if (!is.null(survreg_data$all_knots)) {
+  if (!is.null(object$all_knots)) {
     if (type == 'survival')
       surv <- object$helper_funs$distribution_functions$cdf_function(q = times, gamma = dist_params, lower.tail =FALSE)
     if (any( !near(starts, 0) ))
