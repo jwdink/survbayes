@@ -130,7 +130,6 @@ prep_survreg_data <- function(formula,
                               dist_config = list(knots=NULL),
                               standardize_y = TRUE,
                               na.action = na.exclude) {
-
   stopifnot(is.data.frame(data))
 
   ## set ancilliary formula:
@@ -258,6 +257,9 @@ print.survreg_data <- function(x, title=TRUE, ...) {
   print(x$priors)
 }
 
+
+# General Helpers -------------------------------------------------------------------------------------
+
 #' Concatenate a list of formula
 #'
 #' @param formula Main formula
@@ -265,6 +267,7 @@ print.survreg_data <- function(x, title=TRUE, ...) {
 #'
 #' @return Formula
 concatenate_formula <- function(formula, forms, data) {
+  # TO DO: do i really need/want this function?
   term_objs <- purrr::map(forms, ~terms(.x, data=data))
   covnames <- unique(purrr::flatten_chr( purrr::map(term_objs, ~attr(.x,'term.labels')) ))
   cov_formula_char <- if (length(covnames)==0) "1" else paste0(collapse = " + ", covnames)
@@ -276,9 +279,6 @@ concatenate_formula <- function(formula, forms, data) {
   attr(concat_formula, 'covnames.orig') <- covnames
   concat_formula
 }
-
-
-# General Helpers -------------------------------------------------------------------------------------
 
 #' Plot model coefficients
 #'
@@ -627,6 +627,44 @@ fit_survreg_map <- function(survreg_data, newdata=NULL) {
   class(out) <- 'survreg_map'
   out
 
+}
+
+#' Get Cross-Validated Log-Likelihood for a survreg_map model
+#'
+#' @param object An object of class \code{survreg_map}.
+#' @param folds Either (a) the number of folds, or (b) a list of indices for the *test* group.
+#' @param seed Allows you to set the seed for reproducible folds. This is essential if you want to
+#'   compare cross-validation estimates for different calls to this function.
+#' @param mc.cores Passed to \code{parallel::mclapply} for running folds in parallel.
+#'
+#' @return A vector of log-liklihoods, one for each
+#' @export
+crossv_loglik <- function(object, folds = 5, seed = NULL, mc.cores = NULL) {
+  stopifnot(class(object)=='survreg_map')
+  if (is.integer(folds)) {
+    if (is.null(seed)) stop("Please set the seed.")
+    else set.seed(seed)
+    num_folds <- folds
+    folds <- list()
+    n <- nrow(object$data)
+    test_n <- floor(n/num_folds)
+    remaining <- seq_len(n)
+    for (i in (num_folds-1)) {
+      folds[[i]] <- sample(remaining, size = test_n, replace = FALSE)
+      remaining <- setdiff(remaining, folds[[i]])
+    }
+    folds[[num_folds]] <- remaining
+  }
+  if (is.list(folds)) {
+    if (is.null(mc.cores))
+      mc.cores <- min(length(folds), parallel::detectCores()-1)
+    fits <- parallel::mclapply(X = folds, mc.cores = mc.cores,
+             FUN = function(.x)
+               fit_survreg_map(object, newdata = object$data[-.x,]))
+    map2_dbl(fits, folds, ~logLik(.x, newdata = object$data[.y,]))
+  } else {
+    stop(call. = FALSE, "`folds` should either be an integer or a list of row-indices for 'test'.")
+  }
 }
 
 #' Get logliklihood from an object of class \code{survreg_map}.
