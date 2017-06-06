@@ -58,21 +58,25 @@ prep_model_components <- function(formula_concat, forms, data, na.action, xlev, 
   scale_params <- map(seq_along(model_mats), function(i) {
     mm <- model_mats[[i]]
     the_terms <- form_terms[[i]]
-    # for each model-mat term, get all the cols in the original data that went into it:
-    mapping_from_mm_col_to_data_col <-
-      map(attr(mm,'assign'), function(assign_idx) names(which(1==attr(the_terms,'factors')[,assign_idx])))
-    # only consider model-mat term to be numeric if all the cols that went into it were numeric:
-    is_numeric_term <- map_lgl(mapping_from_mm_col_to_data_col, function(col)
-      if (length(col)>0 && col %in% colnames(model_frame)) all(map_lgl(as.list(model_frame[,col,drop=FALSE]),is.numeric)) else FALSE)
-    names(is_numeric_term) <- colnames(mm)
+    if (ncol(mm)==1 && colnames(mm)=="(Intercept)") {
+      return( list(center= c(`(Intercept)`=0), scale= c(`(Intercept)`=1)) )
+    } else {
+      # for each model-mat term, get all the cols in the original data that went into it:
+      mapping_from_mm_col_to_data_col <-
+        map(attr(mm,'assign'), function(assign_idx) names(which(1==attr(the_terms,'factors')[,assign_idx])))
+      # only consider model-mat term to be numeric if all the cols that went into it were numeric:
+      is_numeric_term <- map_lgl(mapping_from_mm_col_to_data_col, function(col)
+        if (length(col)>0 && col %in% colnames(model_frame)) all(map_lgl(as.list(model_frame[,col,drop=FALSE]),is.numeric)) else FALSE)
+      names(is_numeric_term) <- colnames(mm)
 
-    # scale/center the numeric ones, set 0,1 for others (meaning no effect)
-    scaled_mm_subset <- scale(mm[,names(which(is_numeric_term)),drop=FALSE])
-    centers <- setNames(rep_along(colnames(mm),0), nm = colnames(mm))
-    centers[is_numeric_term] <- attr(scaled_mm_subset,"scaled:center")
-    scales <- setNames(rep_along(colnames(mm),1), nm = colnames(mm))
-    scales[is_numeric_term] <- attr(scaled_mm_subset,"scaled:scale")
-    list(center=centers,scale=scales)
+      # scale/center the numeric ones, set 0,1 for others (meaning no effect)
+      scaled_mm_subset <- scale(mm[,names(which(is_numeric_term)),drop=FALSE])
+      centers <- setNames(rep_along(colnames(mm),0), nm = colnames(mm))
+      centers[is_numeric_term] <- attr(scaled_mm_subset,"scaled:center")
+      scales <- setNames(rep_along(colnames(mm),1), nm = colnames(mm))
+      scales[is_numeric_term] <- attr(scaled_mm_subset,"scaled:scale")
+      return( list(center= centers,scale= scales) )
+    }
   })
 
   y <- model.extract(model_frame, "response")
