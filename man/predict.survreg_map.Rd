@@ -5,7 +5,7 @@
 \title{Predict method for 'survreg_map'}
 \usage{
 \method{predict}{survreg_map}(object, newdata = NULL, times, starts = NULL,
-  type = "survival")
+  type = "survival", na.action = na.pass)
 }
 \arguments{
 \item{object}{'survreg_map' object}

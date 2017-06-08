@@ -28,6 +28,30 @@ NULL
 
 # SurvReg Data --------------------------------------------------------------------------------
 
+#' Contrasts where each factor-level is explicitly represented
+#'
+#' This contrast-type should only be used in \code{survreg_map}, where (a) the function knows to
+#' center the contrasts so that each coefficient estimate can be interpreted as "deviation from
+#' average," and (b) the fact that this contrast-type is linearly dependent isn't a problem, thanks
+#' to shrinkage from priors.
+#'
+#' @param n a vector of levels for a factor, or the number of levels.
+#' @param contrasts Just set this to TRUE
+#' @param sparse logical indicating if the result should be sparse
+#'
+#' @return Contrast-matrix
+#' @export
+contr.full <- function(n, contrasts=TRUE, sparse=FALSE) {
+  stop(call. = FALSE,
+       "`contr.full` is currently broken, please report this error to the package maintainer.")
+  if (!contrasts)
+    stop(call. = FALSE, 'Please report this error to the package maintainer.')
+  out <- contr.treatment(n = n, contrasts = contrasts, sparse = sparse, base = 1)
+  to_add <- matrix(nrow = nrow(out), ncol = 1, data = c(1,rep(0,nrow(out)-1)),
+                   dimnames = list(row.names(out), rownames(out)[1]))
+  cbind(out,to_add)
+}
+
 #' Prepare components of a model (model.frame, response, etc) for bayesian survival-regression
 #'
 #' @param formula_concat A formula containing all the terms for all the parameters
@@ -46,14 +70,13 @@ prep_model_components <- function(formula_concat, forms, data, na.action, xlev, 
 
   model_frame <- model.frame(formula = formula_concat, data = data, na.action = na.action, drop.unused.levels = TRUE, xlev = xlev)
   xlevels <- .getXlevels(attr(model_frame, "terms"), model_frame)
+  xlevels <- xlevels[map_lgl(names(xlevels), ~is.character(data[[.x]]))]
+  if (length(xlevels)==0) xlevels <- NULL
   form_terms <- purrr::map(forms, ~delete.response(terms(.x, data=data)) )
-  model_mats <- purrr::map(form_terms, ~model.matrix(.x, model_frame) )
+  model_mats <- purrr::map(form_terms, model.matrix,  data=model_frame)
+  list_of_term_mappers <- map(forms, tidysurv::get_terms_mapper, data = data)
 
-  classes <- map_chr(map(model_frame, class), 1)
-  if (any(classes %in% c('character','factor','logical')))
-    warning(call. = FALSE,
-            "Some factor-variables found. You should set a prior for these manually; ",
-            "or use a contrast-scheme where the default prior makes sense.")
+  terms_mapper <- tidysurv::get_terms_mapper(formula = formula_concat, data = data)
 
   scale_params <- map(seq_along(model_mats), function(i) {
     mm <- model_mats[[i]]
@@ -62,20 +85,41 @@ prep_model_components <- function(formula_concat, forms, data, na.action, xlev, 
       return( list(center= c(`(Intercept)`=0), scale= c(`(Intercept)`=1)) )
     } else {
       # for each model-mat term, get all the cols in the original data that went into it:
+      fact_mat <- attr(the_terms,'factors')
       mapping_from_mm_col_to_data_col <-
-        map(attr(mm,'assign'), function(assign_idx) names(which(1==attr(the_terms,'factors')[,assign_idx])))
+        map(attr(mm,'assign'), function(assign_idx) row.names(fact_mat)[1==fact_mat[,assign_idx,drop=TRUE]])
       # only consider model-mat term to be numeric if all the cols that went into it were numeric:
       is_numeric_term <- map_lgl(mapping_from_mm_col_to_data_col, function(col)
         if (length(col)>0 && col %in% colnames(model_frame)) all(map_lgl(as.list(model_frame[,col,drop=FALSE]),is.numeric)) else FALSE)
       names(is_numeric_term) <- colnames(mm)
 
-      # scale/center the numeric ones, set 0,1 for others (meaning no effect)
-      scaled_mm_subset <- scale(mm[,names(which(is_numeric_term)),drop=FALSE])
-      centers <- setNames(rep_along(colnames(mm),0), nm = colnames(mm))
-      centers[is_numeric_term] <- attr(scaled_mm_subset,"scaled:center")
-      scales <- setNames(rep_along(colnames(mm),1), nm = colnames(mm))
-      scales[is_numeric_term] <- attr(scaled_mm_subset,"scaled:scale")
-      return( list(center= centers,scale= scales) )
+      cols_to_center <- names(is_numeric_term)[is_numeric_term]
+      cols_to_scale <- names(is_numeric_term)[is_numeric_term]
+
+      # additionally, we want to center any factors with the 'contr.full' contrast:
+      contrasts_attr <- attr(mm, 'contrasts')
+      if (is.null(contrasts_attr)) contrasts_attr <- list()
+      is_full <- vector(mode = 'logical', length = length(contrasts_attr))
+      is_mat_lgl <- map_lgl(contrasts_attr, is.matrix)
+      is_full[is_mat_lgl] <- map_lgl(contrasts_attr[is_mat_lgl], ~ncol(.x)==nrow(.x))
+      is_full[!is_mat_lgl] <- map_lgl(contrasts_attr[!is_mat_lgl], ~.x=='contr.full')
+      full_contrast_mf_cols <- names(contrasts_attr)[is_full]
+      if (!is.null(full_contrast_mf_cols) && length(full_contrast_mf_cols)>0) {
+        full_contrast_od_cols <- flatten_chr(list_of_term_mappers[[i]](model_frame_cols=full_contrast_mf_cols))
+        cols_to_center <- c(cols_to_center,
+                            flatten_chr(list_of_term_mappers[[i]](original_cols=full_contrast_od_cols)))
+      }
+
+      centers <- setNames(rep(NA, ncol(mm)), colnames(mm))
+      centers[cols_to_center] <- map_dbl(as.data.frame(mm[,cols_to_center]), mean, na.rm=TRUE)
+      scales <- setNames(rep(NA, ncol(mm)), colnames(mm))
+      scales[cols_to_scale] <- map_dbl(as.data.frame(mm[,cols_to_scale]), mean, na.rm=TRUE)
+      undo_for_coefs <- names(centers) %in% names(is_numeric_term)[is_numeric_term]
+
+      data_frame(term = colnames(mm),
+                 center = centers,
+                 scale = scales,
+                 undo_for_coefs =undo_for_coefs)
     }
   })
 
@@ -193,8 +237,7 @@ prep_survreg_data <- function(formula,
 
   ## priors
   priors <- dist_info$default_priors(model_components$model_mats, model_components$y)
-  df_scale_params <-
-    map_df(map(model_components$scale_params,~map_df(.x,.id = 'type',enframe,'term')), ~spread(.x,type,value),.id = 'parameter')
+  df_scale_params <- bind_rows(model_components$scale_params, .id = 'parameter')
   priors <- left_join(x = priors, y = df_scale_params, by = c('parameter','term'))
   inits <- purrr::map(split(priors, priors$parameter), ~with(.x, structure(mu,names=term)))
   inits <- purrr::map(inits, ~array(.x, dim = length(.x)))
@@ -214,8 +257,8 @@ prep_survreg_data <- function(formula,
   for (i in seq_along(model_components$model_mats)) {
     stan_data[[paste0('num_covs_gamma',i-1)]] <- ncol(model_components$model_mats[[i]])
     stan_data[[paste0('X_gamma',i-1)]] <- scale(model_components$model_mats[[i]],
-                                                center = model_components$scale_params[[i]]$center,
-                                                scale = model_components$scale_params[[i]]$scale)
+                                                center = coalesce(model_components$scale_params[[i]]$center,0),
+                                                scale = coalesce(model_components$scale_params[[i]]$scale,1))
   }
 
   ## out:
@@ -254,7 +297,7 @@ print.survreg_data <- function(x, title=TRUE, ...) {
 
   cat("Priors: ====\n")
   cat("(Priors applied to standardized (centered/scaled) variables)\n")
-  print(x$priors)
+  print(select(x$priors,-undo_for_coefs))
 }
 
 
@@ -301,6 +344,10 @@ plot_coefs <- function(x, ...) {
 get_dist_info <- function(dist, k = NULL) {
   dist_infos <- list()
 
+  dist <- match.arg(arg = dist, choices = c('roy_parm_splines'))
+  if (dist=='roy_parm_splines' & is.null(k))
+    stop(call. = FALSE, "Please specify 'k' (number of knots) for this distribution.")
+
   if (!is.null(k)) {
     dist_infos[['roy_parm_splines']] <- tibble::lst(
       name = 'Royston-Parmesian Cumulative-Splines',
@@ -310,10 +357,11 @@ get_dist_info <- function(dist, k = NULL) {
       inverse_transforms = as.list(structure(names=pars, c('identity', 'exp', rep('identity',k-1)))),
       pars_real = paste0(ifelse(transforms=="identity","",paste0(transforms,"_")),pars),
 
-      default_priors = function(model_mats, y) {
+      default_priors = function(model_mats, y = NULL) {
         param_names <- names(model_mats)
 
-        gamma0_init <- -log(mean(y[,3]))
+        if (is.null(y)) gamma0_init <- 0
+        else gamma0_init <- -log(mean(y[,3]))
 
         priors <- purrr::map_df(
           model_mats, .id = 'parameter',
@@ -353,7 +401,7 @@ get_dist_info <- function(dist, k = NULL) {
     )
   }
 
-  dist <- match.arg(arg = dist, choices = names(dist_infos))
+
 
   return(dist_infos[[dist]])
 }
@@ -421,8 +469,8 @@ predict.survreg_map <- function(object, newdata = NULL, times, starts = NULL, ty
   model_mats_std <- map(seq_along(model_components$model_mats),
                         function(i)
                           scale(model_components$model_mats[[i]],
-                                center = object$scale_params[[i]]$center,
-                                scale = object$scale_params[[i]]$scale))
+                                center = coalesce(model_components$scale_params[[i]]$center,0),
+                                scale = coalesce(model_components$scale_params[[i]]$scale,1) ))
   names(model_mats_std) <- object$dist_info$pars_real
 
   unrolled_par <- with(object$res_std, structure( estimate, names = paste0(parameter, "__sep__", term)))
@@ -462,6 +510,9 @@ predict.survreg_map <- function(object, newdata = NULL, times, starts = NULL, ty
 
 #' Fit a bayesian survival model using MAP
 #'
+#' This function usually isn't called directly. Instead, you'd call \code{survreg_map}, which will
+#' call \code{make_survreg_data}, then call this function.
+#'
 #' @param survreg_data An object from \code{make_survreg_data}
 #'
 #' @return An object of class \code{survreg_map}, with print/plot/predict/logLik methods.
@@ -483,8 +534,9 @@ fit_survreg_map <- function(survreg_data, newdata=NULL) {
   model_mats_std <- map(seq_along(model_components$model_mats),
                         function(i)
                           scale(model_components$model_mats[[i]],
-                                center = survreg_data$scale_params[[i]]$center,
-                                scale = survreg_data$scale_params[[i]]$scale))
+                                center = coalesce(model_components$scale_params[[i]]$center,0),
+                                scale = coalesce(model_components$scale_params[[i]]$scale,1))
+  )
   names(model_mats_std) <- survreg_data$dist_info$pars_real
 
   ## unroll inits:
@@ -571,21 +623,32 @@ fit_survreg_map <- function(survreg_data, newdata=NULL) {
   out$helper_funs <- helper_funs
   out$optim <- optim(par = unrolled_par_init, fn = neg_loglik_fun, method = "BFGS", hessian = TRUE, control = list(trace=1))
 
-  ## collect results, add prior:
+  ## collect results, add prior
+  if (all(!is.na(out$optim$hessian)) && all(!is.nan(out$optim$hessian)) && all(is.finite(out$optim$hessian)) &&
+      all(eigen(out$optim$hessian)$values > 0)) {
+    out$cov <- solve(out$optim$hessian)
+    se <- sqrt(diag(out$cov))
+  } else {
+    warning(immediate. = TRUE, call. = FALSE,
+            "Optimisation has probably not converged to the maximum likelihood - Hessian is not positive definite. ")
+    out$cov <- NA
+    se <- setNames(rep(NA, length(unrolled_par_init)), nm=names(unrolled_par_init))
+  }
+
   fisher_info <- solve(out$optim$hessian)
   out$res_std <- survreg_data$priors[,c('parameter','term'),drop=FALSE]
   out$res_std$to_join <- with(out$res_std, paste(parameter, term, sep="__sep__"))
 
   out$res_std <- out$res_std %>%
     left_join(.,enframe(out$optim$par,'to_join','estimate'),by='to_join') %>%
-    left_join(.,enframe(sqrt(diag(fisher_info)),'to_join','std.err'),by='to_join') %>%
+    left_join(.,enframe(se,'to_join','std.err'),by='to_join') %>%
     mutate(ci.low = estimate-std.err*1.96,
            ci.hi = estimate+std.err*1.96,
            std.err=NULL) %>%
     left_join(x = ., y = survreg_data$priors, by=c('parameter','term')) %>%
     select(parameter, term, estimate, ci.low, ci.hi,
            scaled.center = center, scaled.scale = scale,
-           prior.mu = mu, prior.sigma = sigma)
+           prior.mu = mu, prior.sigma = sigma, undo_for_coefs)
 
   ## get coefficients on raw (non-standardized) scale:
   df_est_real <- out$res_std %>%
@@ -595,8 +658,10 @@ fit_survreg_map <- function(survreg_data, newdata=NULL) {
       data[c('estimate','ci.low','ci.hi')] <-
         map(data[c('estimate','ci.low','ci.hi')],
             function(ests) {
-              estimate_raw <- ests*data$scaled.scale
-              intercept_raw <- ests[intercept_lgl] - sum( (estimate_raw*data$scaled.center)[!intercept_lgl] )
+              scaling_vec <- ifelse(data$undo_for_coefs, coalesce(data$scaled.scale, 1), 1)
+              centering_vec <- ifelse(data$undo_for_coefs, coalesce(data$scaled.center, 0), 0)
+              estimate_raw <- ests*scaling_vec
+              intercept_raw <- ests[intercept_lgl] - sum( (estimate_raw*centering_vec)[!intercept_lgl] )
               out <- numeric(length(ests))
               out[intercept_lgl] <- intercept_raw
               out[!intercept_lgl] <- estimate_raw[!intercept_lgl]
@@ -604,7 +669,8 @@ fit_survreg_map <- function(survreg_data, newdata=NULL) {
             })
       data
     }) %>%
-    select(-scaled.center, -scaled.scale, -prior.mu,-prior.sigma)
+    select(-scaled.center, -scaled.scale, -prior.mu,-prior.sigma, -undo_for_coefs)
+  out$res_std$undo_for_coefs <- NULL
 
   ## get coefficients in terms of non-transformed parameters:
   out$res <- map2_df(.x = split(df_est_real, df_est_real$parameter)[survreg_data$dist_info$pars_real],
@@ -629,6 +695,89 @@ fit_survreg_map <- function(survreg_data, newdata=NULL) {
 
 }
 
+#' Set prior
+#'
+#' @param parameter
+#' @param terms
+#' @param mu
+#' @param sigma
+#'
+#' @return
+#' @export
+set_prior <- function(parameter = NULL, terms, mu = NULL, sigma = NULL) {
+  stopifnot(is.character(terms) || inherits(terms, "col_list"))
+  if (is.character(terms)) terms <- paste0("`",terms,"`")
+  out <- function(prior_df) {
+    if (!is.null(parameter)) {
+      if (!parameter %in% prior_df$parameter)
+        stop(call. = FALSE,
+             "Parameter ", parameter,
+             " not found; available parameters are: ", paste0(unique(prior_df$parameter), collapse=", "))
+      param_lgl <- (prior_df$parameter == parameter)
+    } else {
+      param_lgl <- rep(TRUE, nrow(prior_df))
+    }
+    terms_to_modify <- unname(dplyr::select_vars_(vars = unique(prior_df$term[param_lgl]), args = terms))
+    if (!is.null(mu))
+      prior_df$mu[prior_df$term%in%terms_to_modify & param_lgl] <- mu
+    if (!is.null(sigma))
+      prior_df$sigma[prior_df$term%in%terms_to_modify & param_lgl] <- sigma
+    prior_df
+  }
+  class(out) <- c('prior',class(out))
+  out
+}
+
+#' Build a bayesian survival model using MAP
+#'
+#' @param formula Formula with both rhs and lhs. Rhs will be applied to 'location' parameter of the
+#'   distribution, or for spline-based models, the first parameter (gamma0).
+#' @param anc A list of lhs-only formulae. Must be named for the parameters of the distribution
+#'   (e.g., \code{list(gamma1 = ~ pred1 + pred2)}).
+#' @param data A data.frame
+#' @param distribution Character naming the distribution
+#' @param dist_config A list customizing the distribution. For example, if \code{distribution =
+#'   'roy_parm_splines'}, then you can pass \code{list(knots=)} to specify the location of the
+#'   knots.
+#' @param standardize_y If TRUE (the default), then response variable is standardized. This means
+#'   taking the log of the 'end' times, standardizing (subtract mean, divide by sd) them, then
+#'   taking the exponent of that. If a list is passed for this argument, it's assumed to have
+#'   components 'center' and 'scale', for performing this standardization. Standardization is
+#'   helpful because it makes the default priors more meaningful across datasets.
+#' @param na.action Function for NAs
+#' @param priors
+#'
+#' @return An object of class \code{survreg_map}, with print/plot/predict/logLik methods.
+#' @export
+survreg_map <- function(formula,
+                        anc = NULL,
+                        data,
+                        distribution = 'roy_parm_splines',
+                        dist_config = list(knots=NULL),
+                        standardize_y = TRUE,
+                        na.action = na.exclude,
+                        priors = NULL) {
+  survreg_data <- prep_survreg_data(formula = formula, anc = anc, data = data,
+                                    distribution = distribution,
+                                    dist_config = list(knots=NULL),
+                                    standardize_y = TRUE,
+                                    na.action = na.exclude)
+
+  if (!is.null(priors)) {
+    if (class(priors)[1]=='prior')
+      priors <- list(priors)
+    if (is.list(priors)) {
+      walk(priors, ~stopifnot(class(.x)[1]=='prior'))
+      for (prior in priors)
+        survreg_data$priors <- prior(survreg_data$priors)
+    } else {
+      stop("`priors` should be a list of outputs from `set_prior`.")
+    }
+
+  }
+  fit_survreg_map(survreg_data)
+}
+
 #' Get Cross-Validated Log-Likelihood for a survreg_map model
 #'
 #' @param object An object of class \code{survreg_map}.
@@ -640,8 +789,8 @@ fit_survreg_map <- function(survreg_data, newdata=NULL) {
 #' @return A vector of log-liklihoods, one for each
 #' @export
 crossv_loglik <- function(object, folds = 5, seed = NULL, mc.cores = NULL) {
-  stopifnot(class(object)=='survreg_map')
-  if (is.integer(folds)) {
+  stopifnot(class(object)[1]=='survreg_map')
+  if (is.numeric(folds)) {
     if (is.null(seed)) stop("Please set the seed.")
     else set.seed(seed)
     num_folds <- folds
@@ -649,7 +798,7 @@ crossv_loglik <- function(object, folds = 5, seed = NULL, mc.cores = NULL) {
     n <- nrow(object$data)
     test_n <- floor(n/num_folds)
     remaining <- seq_len(n)
-    for (i in (num_folds-1)) {
+    for (i in seq_len(num_folds-1)) {
       folds[[i]] <- sample(remaining, size = test_n, replace = FALSE)
       remaining <- setdiff(remaining, folds[[i]])
     }
@@ -690,8 +839,8 @@ logLik.survreg_map <- function(object, newdata = NULL, ...) {
   model_mats_std <- map(seq_along(model_components$model_mats),
                         function(i)
                           scale(model_components$model_mats[[i]],
-                                center = object$scale_params[[i]]$center,
-                                scale = object$scale_params[[i]]$scale))
+                                center = coalesce(object$scale_params[[i]]$center,0),
+                                scale = coalesce(object$scale_params[[i]]$scale,1)))
   names(model_mats_std) <- object$dist_info$pars_real
 
   unrolled_par <- with(object$res_std, structure( estimate, names = paste0(parameter, "__sep__", term)))

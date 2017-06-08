@@ -13,5 +13,6 @@ fit_survreg_map(survreg_data, newdata = NULL)
 An object of class \code{survreg_map}, with print/plot/predict/logLik methods.
 }
 \description{
-Fit a bayesian survival model using MAP
+This function usually isn't called directly. Instead, you'd call \code{survreg_map}, which will
+call \code{make_survreg_data}, then call this function.
 }
