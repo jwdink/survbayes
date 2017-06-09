@@ -4,10 +4,15 @@
 \alias{fit_survreg_map}
 \title{Fit a bayesian survival model using MAP}
 \usage{
-fit_survreg_map(survreg_data, newdata = NULL)
+fit_survreg_map(survreg_data, newdata = NULL, optim_args = list(method =
+  "BFGS", control = list(trace = as.integer(interactive()))))
 }
 \arguments{
 \item{survreg_data}{An object from \code{make_survreg_data}}
+
+\item{newdata}{New data to use in fitting}
+
+\item{optim_args}{A list of arguments to be passed to \code{optim}.}
 }
 \value{
 An object of class \code{survreg_map}, with print/plot/predict/logLik methods.

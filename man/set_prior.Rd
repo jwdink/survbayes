@@ -7,7 +7,17 @@
 set_prior(parameter = NULL, terms, mu = NULL, sigma = NULL)
 }
 \arguments{
-\item{sigma}{}
+\item{parameter}{The parameter}
+
+\item{terms}{The terms. Can be a character vector, or the result of \code{dplyr::vars}, which can be convenient for setting the prior on all but some terms.}
+
+\item{mu}{A value for mu, to be appled to all `terms` for the `parameter`}
+
+\item{sigma}{A value for sigma, to be appled to all `terms` for the `parameter`}
+}
+\value{
+An object of class 'prior', to be (optionally inserted into a list with other priors and)
+  passed to `priors` arg in `survreg_map`
 }
 \description{
 Set prior

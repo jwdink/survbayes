@@ -21,7 +21,10 @@ Imports:
   broom (>= 0.4.2),
   purrr (>= 0.2.2),
   tibble (>= 1.2),
-  glue (>= 1.0.0)
+  glue (>= 1.0.0),
+  tidysurv (>= 0.1.0)
 Depends:
   survival (>= 2.40-1)
 Suggests: testthat
+Remotes: jwdink/tidysurv
+

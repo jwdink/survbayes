@@ -2,12 +2,18 @@
 % Please edit documentation in R/survbayes-package.R
 \name{crossv_loglik}
 \alias{crossv_loglik}
-\title{Get Cross-Validated Log-Likelihood for a survreg_map model}
+\alias{crossv_loglik.survreg_map}
+\title{Get Cross-Validated Log-Likelihood}
 \usage{
-crossv_loglik(object, folds = 5, seed = NULL, mc.cores = NULL)
+crossv_loglik(object, ...)
+
+\method{crossv_loglik}{survreg_map}(object, folds = 5, seed = NULL,
+  mc.cores = NULL, ...)
 }
 \arguments{
-\item{object}{An object of class \code{survreg_map}.}
+\item{object}{An object to be cross-validated}
+
+\item{...}{Ignored}
 
 \item{folds}{Either (a) the number of folds, or (b) a list of indices for the *test* group.}
 
@@ -17,8 +23,15 @@ compare cross-validation estimates for different calls to this function.}
 \item{mc.cores}{Passed to \code{parallel::mclapply} for running folds in parallel.}
 }
 \value{
-A vector of log-liklihoods, one for each
+A vector of log-liklihoods, one for each fold
 }
 \description{
+Get Cross-Validated Log-Likelihood
+
 Get Cross-Validated Log-Likelihood for a survreg_map model
 }
+\section{Methods (by class)}{
+\itemize{
+\item \code{survreg_map}: 
+}}
+

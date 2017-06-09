@@ -10,6 +10,8 @@ concatenate_formula(formula, forms, data)
 \item{formula}{Main formula}
 
 \item{forms}{List of rhs-only formula, from `anc` argument.}
+
+\item{data}{Data.frame}
 }
 \value{
 Formula

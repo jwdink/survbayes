@@ -31,7 +31,7 @@ helpful because it makes the default priors more meaningful across datasets.}
 
 \item{na.action}{Function for NAs}
 
-\item{priors}{}
+\item{priors}{An object resulting from \code{set_prior} (or a list of these).}
 }
 \value{
 An object of class \code{survreg_map}, with print/plot/predict/logLik methods.

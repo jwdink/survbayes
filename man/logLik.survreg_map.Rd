@@ -11,7 +11,7 @@
 
 \item{newdata}{Optional, newdata on which to calculate the likelihood.}
 
-\item{...}{}
+\item{...}{Ignored}
 }
 \value{
 The log-likelihood.

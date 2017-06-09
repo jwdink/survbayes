@@ -10,13 +10,15 @@
 #' @importFrom tibble rownames_to_column lst
 #' @importFrom purrr map map2 pmap map_dbl map_chr map_lgl
 #'             map2_chr map2_dbl map2_lgl transpose flatten_chr flatten_dbl flatten_lgl
-#'             walk walk2
+#'             walk walk2 map_df map2_df
+#' @importFrom tidysurv get_terms_mapper
 #' @importFrom graphics plot
 #' @importFrom stats sd terms update integrate delete.response
 #'             as.formula coef fitted glm lm median na.omit
 #'             predict var quantile model.response model.frame
 #'             na.pass na.exclude na.fail model.matrix model.weights
-#'             .getXlevels .checkMFClasses reformulate logLik
+#'             .getXlevels .checkMFClasses reformulate logLik model.extract optim
+#'             contr.treatment formula setNames
 #' @importFrom grDevices dev.off pdf
 #' @importFrom glue glue
 #'
@@ -68,7 +70,7 @@ contr.full <- function(n, contrasts=TRUE, sparse=FALSE) {
 #'   subsequent calls (params for standardizing).
 prep_model_components <- function(formula_concat, forms, data, na.action, xlev, standardize_y) {
 
-  model_frame <- model.frame(formula = formula_concat, data = data, na.action = na.action, drop.unused.levels = TRUE, xlev = xlev)
+  model_frame <- model.frame(formula = formula_concat, data = data, na.action = na.action, drop.unused.levels = FALSE, xlev = xlev)
   xlevels <- .getXlevels(attr(model_frame, "terms"), model_frame)
   xlevels <- xlevels[map_lgl(names(xlevels), ~is.character(data[[.x]]))]
   if (length(xlevels)==0) xlevels <- NULL
@@ -280,6 +282,7 @@ prep_survreg_data <- function(formula,
 
 }
 
+#' @export
 print.survreg_data <- function(x, title=TRUE, ...) {
   if (title)
   cat(sep = "",
@@ -307,6 +310,7 @@ print.survreg_data <- function(x, title=TRUE, ...) {
 #'
 #' @param formula Main formula
 #' @param forms List of rhs-only formula, from `anc` argument.
+#' @param data Data.frame
 #'
 #' @return Formula
 concatenate_formula <- function(formula, forms, data) {
@@ -325,12 +329,12 @@ concatenate_formula <- function(formula, forms, data) {
 
 #' Plot model coefficients
 #'
-#' @param x A model object
+#' @param object A model object
 #' @param ... Other arguments to be passed to methods
 #'
 #' @return A ggplot object
 #' @export
-plot_coefs <- function(x, ...) {
+plot_coefs <- function(object, ...) {
   UseMethod('plot_coefs')
 }
 
@@ -438,8 +442,9 @@ Survint <- function(end, event, start = NULL, end_lb = NULL) {
 
 # SurvReg MAP ---------------------------------------------------------------------------------
 
-terms.survreg_map <- function(object, ...) {
-  terms(object$formula_concat)
+#' @export
+terms.survreg_map <- function(x, ...) {
+  terms(x$formula_concat)
 }
 
 #' Predict method for 'survreg_map'
@@ -449,10 +454,12 @@ terms.survreg_map <- function(object, ...) {
 #' @param times Only required if type != 'parameters. A vector of times with length 1 or nrow(newdata)
 #' @param starts Optional, for type = 'survival' only. A vector of start/truncation times with length 1 or nrow(newdata). Survival times will be conditional up to survival at this point.
 #' @param type Type of prediction. Can be predicted 'parameters' of the distribution for each row, or 'survival' probabilities (at 'times', given 'starts').
+#' @param na.action Function for dealing with NAs
+#' @param ... Ignored
 #'
 #' @return A matrix if type = 'parameters', or a vector if type = 'survival'.
 #' @export
-predict.survreg_map <- function(object, newdata = NULL, times, starts = NULL, type = 'survival', na.action = na.pass) {
+predict.survreg_map <- function(object, newdata = NULL, times, starts = NULL, type = 'survival', na.action = na.pass, ...) {
   if (is.null(newdata)) newdata <- object$data
 
   type <- match.arg(arg = type, choices = c('survival','parameters'))
@@ -514,10 +521,13 @@ predict.survreg_map <- function(object, newdata = NULL, times, starts = NULL, ty
 #' call \code{make_survreg_data}, then call this function.
 #'
 #' @param survreg_data An object from \code{make_survreg_data}
+#' @param newdata New data to use in fitting
+#' @param optim_args A list of arguments to be passed to \code{optim}.
 #'
 #' @return An object of class \code{survreg_map}, with print/plot/predict/logLik methods.
 #' @export
-fit_survreg_map <- function(survreg_data, newdata=NULL) {
+fit_survreg_map <- function(survreg_data, newdata=NULL,
+                            optim_args = list(method = "BFGS", control = list(trace=as.integer(interactive())))) {
 
   if (is.null(newdata))
     newdata <- survreg_data$data
@@ -621,7 +631,13 @@ fit_survreg_map <- function(survreg_data, newdata=NULL) {
   ## optimize:
   out <- list()
   out$helper_funs <- helper_funs
-  out$optim <- optim(par = unrolled_par_init, fn = neg_loglik_fun, method = "BFGS", hessian = TRUE, control = list(trace=1))
+  out$optim <- do.call(optim,
+                       c(
+                         list( par = unrolled_par_init,
+                               fn = neg_loglik_fun,
+                               hessian = TRUE ),
+                         optim_args
+                       ))
 
   ## collect results, add prior
   if (all(!is.na(out$optim$hessian)) && all(!is.nan(out$optim$hessian)) && all(is.finite(out$optim$hessian)) &&
@@ -630,7 +646,7 @@ fit_survreg_map <- function(survreg_data, newdata=NULL) {
     se <- sqrt(diag(out$cov))
   } else {
     warning(immediate. = TRUE, call. = FALSE,
-            "Optimisation has probably not converged to the maximum likelihood - Hessian is not positive definite. ")
+            "Optimisation has probably not converged - Hessian is not positive definite. ")
     out$cov <- NA
     se <- setNames(rep(NA, length(unrolled_par_init)), nm=names(unrolled_par_init))
   }
@@ -688,7 +704,8 @@ fit_survreg_map <- function(survreg_data, newdata=NULL) {
     select(-parameter_real) %>%
     select(parameter, everything())
 
-  out[names(survreg_data)] <- survreg_data
+  to_write <- setdiff(names(survreg_data), names(out))
+  out[to_write] <- survreg_data[to_write]
 
   class(out) <- 'survreg_map'
   out
@@ -697,15 +714,18 @@ fit_survreg_map <- function(survreg_data, newdata=NULL) {
 
 #' Set prior
 #'
-#' @param parameter
-#' @param terms
-#' @param mu
-#' @param sigma
+#' @param parameter The parameter
+#' @param terms The terms. Can be a character vector, or the result of \code{dplyr::vars}, which can be convenient for setting the prior on all but some terms.
+#' @param mu A value for mu, to be appled to all `terms` for the `parameter`
+#' @param sigma A value for sigma, to be appled to all `terms` for the `parameter`
 #'
-#' @return
+#' @return An object of class 'prior', to be (optionally inserted into a list with other priors and)
+#'   passed to `priors` arg in `survreg_map`
 #' @export
 set_prior <- function(parameter = NULL, terms, mu = NULL, sigma = NULL) {
   stopifnot(is.character(terms) || inherits(terms, "col_list"))
+  stopifnot(length(mu)==1)
+  stopifnot(length(sigma)==1)
   if (is.character(terms)) terms <- paste0("`",terms,"`")
   out <- function(prior_df) {
     if (!is.null(parameter)) {
@@ -745,7 +765,7 @@ set_prior <- function(parameter = NULL, terms, mu = NULL, sigma = NULL) {
 #'   components 'center' and 'scale', for performing this standardization. Standardization is
 #'   helpful because it makes the default priors more meaningful across datasets.
 #' @param na.action Function for NAs
-#' @param priors
+#' @param priors An object resulting from \code{set_prior} (or a list of these).
 #'
 #' @return An object of class \code{survreg_map}, with print/plot/predict/logLik methods.
 #' @export
@@ -778,18 +798,25 @@ survreg_map <- function(formula,
   fit_survreg_map(survreg_data)
 }
 
-#' Get Cross-Validated Log-Likelihood for a survreg_map model
+#' Get Cross-Validated Log-Likelihood
 #'
-#' @param object An object of class \code{survreg_map}.
+#' @param object An object to be cross-validated
+#'
+#' @return A vector of log-liklihoods, one for each fold
+#' @export
+crossv_loglik <- function(object, ...)  UseMethod('crossv_loglik')
+
+#' Get Cross-Validated Log-Likelihood for a survreg_map model
+#' @describeIn crossv_loglik
+#'
 #' @param folds Either (a) the number of folds, or (b) a list of indices for the *test* group.
 #' @param seed Allows you to set the seed for reproducible folds. This is essential if you want to
 #'   compare cross-validation estimates for different calls to this function.
 #' @param mc.cores Passed to \code{parallel::mclapply} for running folds in parallel.
+#' @param ... Ignored
 #'
-#' @return A vector of log-liklihoods, one for each
 #' @export
-crossv_loglik <- function(object, folds = 5, seed = NULL, mc.cores = NULL) {
-  stopifnot(class(object)[1]=='survreg_map')
+crossv_loglik.survreg_map <- function(object, folds = 5, seed = NULL, mc.cores = NULL, ...) {
   if (is.numeric(folds)) {
     if (is.null(seed)) stop("Please set the seed.")
     else set.seed(seed)
@@ -809,8 +836,11 @@ crossv_loglik <- function(object, folds = 5, seed = NULL, mc.cores = NULL) {
       mc.cores <- min(length(folds), parallel::detectCores()-1)
     fits <- parallel::mclapply(X = folds, mc.cores = mc.cores,
              FUN = function(.x)
-               fit_survreg_map(object, newdata = object$data[-.x,]))
-    map2_dbl(fits, folds, ~logLik(.x, newdata = object$data[.y,]))
+               update.survreg_map(object, data = object$data[-.x,]))
+    conv_fail_lgl <- !map_lgl(map(fits,'cov'), is.matrix)
+    out <- map2_dbl(fits, folds, ~logLik(.x, newdata = object$data[.y,]))
+    out[conv_fail_lgl] <- NA
+    out
   } else {
     stop(call. = FALSE, "`folds` should either be an integer or a list of row-indices for 'test'.")
   }
@@ -820,7 +850,7 @@ crossv_loglik <- function(object, folds = 5, seed = NULL, mc.cores = NULL) {
 #'
 #' @param object An object of class \code{survreg_map}.
 #' @param newdata Optional, newdata on which to calculate the likelihood.
-#' @param ...
+#' @param ... Ignored
 #'
 #' @return The log-likelihood.
 #' @export
@@ -850,9 +880,12 @@ logLik.survreg_map <- function(object, newdata = NULL, ...) {
   return( sum(log(lik)) )
 }
 
-coef.survreg_map <- function(object, ...)
+#' @export
+coef.survreg_map <- function(object, ...) {
   purrr::map(split(object$res, object$res$parameter), ~setNames(.x$estimate, nm = .x$term))
+}
 
+#' @export
 print.survreg_map <- function(x, standarized = TRUE, ...) {
   if (standarized) {
     cat("\nResults (standardized): ====\n")
@@ -863,7 +896,8 @@ print.survreg_map <- function(x, standarized = TRUE, ...) {
   }
 }
 
-plot_coefs.survreg_map <- function(object, standardized=FALSE) {
+#' @export
+plot_coefs.survreg_map <- function(object, standardized=FALSE, ...) {
 
   if (standardized) {
     object$res_std$parameter <- factor(object$res_std$parameter, levels = object$dist_info$pars_real)
@@ -885,6 +919,43 @@ plot_coefs.survreg_map <- function(object, standardized=FALSE) {
       theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
       guides(colour=FALSE)
   }
+
+}
+
+#' Update method for \code{survreg_map}
+#'
+#' This is a rudimentary update method for \code{survreg_map}. Unlike most update methods in R, this
+#' doesn't work by modifying and replaying the call, but instead uses the slots in the object. It's
+#' limited to updating the formula(s), the data, and/or the prior(s).
+#'
+#' @param object An object of class \code{survreg_map}
+#' @param ... Args to be updated. Currently just `data` and `priors`. Even if `data` is updated, the
+#'   centering/scaling of predictors will *not* be updated, so that the updated model can be
+#'   compared to the original apples-to-apples.
+#'
+#' @return An updated model.
+#' @export
+update.survreg_map <- function(object, ...) {
+  new_args <- list(...)
+  if (!all(names(new_args)%in%c('data','priors')))
+    stop(call. = FALSE,
+         "Currently, the `update` method for `survreg_map` only supports updating the formula(e), data, and/or priors.")
+  if ('data' %in% names(new_args))
+    object$data <- new_args$data
+
+  if ('priors' %in% names(new_args)) {
+    priors <- new_args$priors
+      if (class(priors)[1]=='prior')
+        priors <- list(priors)
+      if (is.list(priors)) {
+        walk(priors, ~stopifnot(class(.x)[1]=='prior'))
+        for (prior in priors)
+          object$priors <- prior(object$priors)
+      } else {
+        stop("`priors` should be a list of outputs from `set_prior`.")
+      }
+  }
+  fit_survreg_map(object, newdata = new_args$data)
 
 }
 

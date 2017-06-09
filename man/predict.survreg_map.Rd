@@ -5,7 +5,7 @@
 \title{Predict method for 'survreg_map'}
 \usage{
 \method{predict}{survreg_map}(object, newdata = NULL, times, starts = NULL,
-  type = "survival", na.action = na.pass)
+  type = "survival", na.action = na.pass, ...)
 }
 \arguments{
 \item{object}{'survreg_map' object}
@@ -17,6 +17,10 @@
 \item{starts}{Optional, for type = 'survival' only. A vector of start/truncation times with length 1 or nrow(newdata). Survival times will be conditional up to survival at this point.}
 
 \item{type}{Type of prediction. Can be predicted 'parameters' of the distribution for each row, or 'survival' probabilities (at 'times', given 'starts').}
+
+\item{na.action}{Function for dealing with NAs}
+
+\item{...}{Ignored}
 }
 \value{
 A matrix if type = 'parameters', or a vector if type = 'survival'.

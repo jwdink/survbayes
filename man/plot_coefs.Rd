@@ -4,10 +4,10 @@
 \alias{plot_coefs}
 \title{Plot model coefficients}
 \usage{
-plot_coefs(x, ...)
+plot_coefs(object, ...)
 }
 \arguments{
-\item{x}{A model object}
+\item{object}{A model object}
 
 \item{...}{Other arguments to be passed to methods}
 }
