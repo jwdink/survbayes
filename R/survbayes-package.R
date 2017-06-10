@@ -724,8 +724,7 @@ fit_survreg_map <- function(survreg_data, newdata=NULL,
 #' @export
 set_prior <- function(parameter = NULL, terms, mu = NULL, sigma = NULL) {
   stopifnot(is.character(terms) || inherits(terms, "col_list"))
-  stopifnot(length(mu)==1)
-  stopifnot(length(sigma)==1)
+
   if (is.character(terms)) terms <- paste0("`",terms,"`")
   out <- function(prior_df) {
     if (!is.null(parameter)) {
