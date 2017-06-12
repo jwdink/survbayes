@@ -72,7 +72,7 @@ prep_model_components <- function(formula_concat, forms, data, na.action, xlev, 
 
   model_frame <- model.frame(formula = formula_concat, data = data, na.action = na.action, drop.unused.levels = FALSE, xlev = xlev)
   xlevels <- .getXlevels(attr(model_frame, "terms"), model_frame)
-  xlevels <- xlevels[map_lgl(names(xlevels), ~is.character(data[[.x]]))]
+  if (!is.null(xlevels)) xlevels <- xlevels[map_lgl(names(xlevels), ~is.character(data[[.x]]))]
   if (length(xlevels)==0) xlevels <- NULL
   form_terms <- purrr::map(forms, ~delete.response(terms(.x, data=data)) )
   model_mats <- purrr::map(form_terms, model.matrix,  data=model_frame)
@@ -84,7 +84,11 @@ prep_model_components <- function(formula_concat, forms, data, na.action, xlev, 
     mm <- model_mats[[i]]
     the_terms <- form_terms[[i]]
     if (ncol(mm)==1 && colnames(mm)=="(Intercept)") {
-      return( list(center= c(`(Intercept)`=0), scale= c(`(Intercept)`=1)) )
+      out <- data_frame(term = "(Intercept)",
+                        center = 0,
+                        scale = 1,
+                        undo_for_coefs =FALSE)
+      return(out)
     } else {
       # for each model-mat term, get all the cols in the original data that went into it:
       fact_mat <- attr(the_terms,'factors')
@@ -117,7 +121,6 @@ prep_model_components <- function(formula_concat, forms, data, na.action, xlev, 
       scales <- setNames(rep(NA, ncol(mm)), colnames(mm))
       scales[cols_to_scale] <- map_dbl(as.data.frame(mm[,cols_to_scale]), mean, na.rm=TRUE)
       undo_for_coefs <- names(centers) %in% names(is_numeric_term)[is_numeric_term]
-
       data_frame(term = colnames(mm),
                  center = centers,
                  scale = scales,
@@ -179,6 +182,7 @@ prep_survreg_data <- function(formula,
   stopifnot(is.data.frame(data))
 
   ## set ancilliary formula:
+  if (length(formula)!=3) stop(call. = FALSE, "`formula` must have rhs and lhs.")
   if (!is.null(anc)) {
     anc_arg <- anc
     if (!is.list(anc_arg) || is.null(names(anc_arg)) || any(names(anc_arg)=="") )
@@ -778,9 +782,9 @@ survreg_map <- function(formula,
                         priors = NULL) {
   survreg_data <- prep_survreg_data(formula = formula, anc = anc, data = data,
                                     distribution = distribution,
-                                    dist_config = list(knots=NULL),
-                                    standardize_y = TRUE,
-                                    na.action = na.exclude)
+                                    dist_config = dist_config,
+                                    standardize_y = standardize_y,
+                                    na.action = na.action)
 
   if (!is.null(priors)) {
     if (class(priors)[1]=='prior')
@@ -895,12 +899,19 @@ print.survreg_map <- function(x, standarized = TRUE, ...) {
   }
 }
 
+#' Plot coefficients for 'survreg_map'
+#' @describeIn plot_coefs
+#'
+#' @param standardized Should the coefficient-estimates be standardized? If so, the prior will be
+#'   plotted in the background.
+#'
 #' @export
 plot_coefs.survreg_map <- function(object, standardized=FALSE, ...) {
 
   if (standardized) {
     object$res_std$parameter <- factor(object$res_std$parameter, levels = object$dist_info$pars_real)
-    ggplot(object$res_std, aes(x=term, y = estimate, color = parameter)) +
+    ggplot(object$res_std, aes(x=term, y = estimate, color = parameter, shape = ci.low>0|ci.hi<0)) +
+      scale_shape_discrete(guide=FALSE)+
       geom_pointrange(aes(ymin = ci.low, ymax = ci.hi)) +
       facet_wrap(~parameter, scales = 'free') +
       geom_hline(yintercept = 0) +

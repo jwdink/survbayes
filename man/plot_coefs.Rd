@@ -2,18 +2,31 @@
 % Please edit documentation in R/survbayes-package.R
 \name{plot_coefs}
 \alias{plot_coefs}
+\alias{plot_coefs.survreg_map}
 \title{Plot model coefficients}
 \usage{
 plot_coefs(object, ...)
+
+\method{plot_coefs}{survreg_map}(object, standardized = FALSE, ...)
 }
 \arguments{
 \item{object}{A model object}
 
 \item{...}{Other arguments to be passed to methods}
+
+\item{standardized}{Should the coefficient-estimates be standardized? If so, the prior will be
+plotted in the background.}
 }
 \value{
 A ggplot object
 }
 \description{
 Plot model coefficients
+
+Plot coefficients for 'survreg_map'
 }
+\section{Methods (by class)}{
+\itemize{
+\item \code{survreg_map}: 
+}}
+
