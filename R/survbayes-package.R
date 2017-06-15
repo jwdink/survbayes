@@ -119,7 +119,7 @@ prep_model_components <- function(formula_concat, forms, data, na.action, xlev, 
       centers <- setNames(rep(NA, ncol(mm)), colnames(mm))
       centers[cols_to_center] <- map_dbl(as.data.frame(mm[,cols_to_center]), mean, na.rm=TRUE)
       scales <- setNames(rep(NA, ncol(mm)), colnames(mm))
-      scales[cols_to_scale] <- map_dbl(as.data.frame(mm[,cols_to_scale]), mean, na.rm=TRUE)
+      scales[cols_to_scale] <- map_dbl(as.data.frame(mm[,cols_to_scale]), sd, na.rm=TRUE)
       undo_for_coefs <- names(centers) %in% names(is_numeric_term)[is_numeric_term]
       data_frame(term = colnames(mm),
                  center = centers,
@@ -480,8 +480,8 @@ predict.survreg_map <- function(object, newdata = NULL, times, starts = NULL, ty
   model_mats_std <- map(seq_along(model_components$model_mats),
                         function(i)
                           scale(model_components$model_mats[[i]],
-                                center = coalesce(model_components$scale_params[[i]]$center,0),
-                                scale = coalesce(model_components$scale_params[[i]]$scale,1) ))
+                                center = coalesce(object$scale_params[[i]]$center,0),
+                                scale = coalesce(object$scale_params[[i]]$scale,1) ))
   names(model_mats_std) <- object$dist_info$pars_real
 
   unrolled_par <- with(object$res_std, structure( estimate, names = paste0(parameter, "__sep__", term)))
@@ -531,7 +531,10 @@ predict.survreg_map <- function(object, newdata = NULL, times, starts = NULL, ty
 #' @return An object of class \code{survreg_map}, with print/plot/predict/logLik methods.
 #' @export
 fit_survreg_map <- function(survreg_data, newdata=NULL,
-                            optim_args = list(method = "BFGS", control = list(trace=as.integer(interactive())))) {
+                            optim_args = list(method = "BFGS",
+                                              control = list(trace=as.integer(interactive()),
+                                                             maxit=250) )
+                            ) {
 
   if (is.null(newdata))
     newdata <- survreg_data$data
@@ -644,7 +647,10 @@ fit_survreg_map <- function(survreg_data, newdata=NULL,
                        ))
 
   ## collect results, add prior
-  if (all(!is.na(out$optim$hessian)) && all(!is.nan(out$optim$hessian)) && all(is.finite(out$optim$hessian)) &&
+  if (!is.null(out$optim$hessian) &&
+      all(!is.na(out$optim$hessian)) &&
+      all(!is.nan(out$optim$hessian)) &&
+      all(is.finite(out$optim$hessian)) &&
       all(eigen(out$optim$hessian)$values > 0)) {
     out$cov <- solve(out$optim$hessian)
     se <- sqrt(diag(out$cov))
@@ -655,7 +661,6 @@ fit_survreg_map <- function(survreg_data, newdata=NULL,
     se <- setNames(rep(NA, length(unrolled_par_init)), nm=names(unrolled_par_init))
   }
 
-  fisher_info <- solve(out$optim$hessian)
   out$res_std <- survreg_data$priors[,c('parameter','term'),drop=FALSE]
   out$res_std$to_join <- with(out$res_std, paste(parameter, term, sep="__sep__"))
 
@@ -732,10 +737,12 @@ set_prior <- function(parameter = NULL, terms, mu = NULL, sigma = NULL) {
   if (is.character(terms)) terms <- paste0("`",terms,"`")
   out <- function(prior_df) {
     if (!is.null(parameter)) {
-      if (!parameter %in% prior_df$parameter)
-        stop(call. = FALSE,
-             "Parameter ", parameter,
-             " not found; available parameters are: ", paste0(unique(prior_df$parameter), collapse=", "))
+      if (!parameter %in% prior_df$parameter) {
+        warning(call. = FALSE,immediate. = TRUE,
+                "Parameter ", parameter,
+                " not found; available parameters are: ", paste0(unique(prior_df$parameter), collapse=", "))
+        return(prior_df)
+      }
       param_lgl <- (prior_df$parameter == parameter)
     } else {
       param_lgl <- rep(TRUE, nrow(prior_df))
@@ -769,6 +776,7 @@ set_prior <- function(parameter = NULL, terms, mu = NULL, sigma = NULL) {
 #'   helpful because it makes the default priors more meaningful across datasets.
 #' @param na.action Function for NAs
 #' @param priors An object resulting from \code{set_prior} (or a list of these).
+#' @param optim_args A list of arguments to be passed to \code{optim}.
 #'
 #' @return An object of class \code{survreg_map}, with print/plot/predict/logLik methods.
 #' @export
@@ -779,7 +787,10 @@ survreg_map <- function(formula,
                         dist_config = list(knots=NULL),
                         standardize_y = TRUE,
                         na.action = na.exclude,
-                        priors = NULL) {
+                        priors = NULL,
+                        optim_args = list(method = "BFGS", control = list(trace=as.integer(interactive()),
+                                                                          maxit=250) )
+                        ) {
   survreg_data <- prep_survreg_data(formula = formula, anc = anc, data = data,
                                     distribution = distribution,
                                     dist_config = dist_config,
@@ -798,7 +809,7 @@ survreg_map <- function(formula,
     }
 
   }
-  fit_survreg_map(survreg_data)
+  fit_survreg_map(survreg_data, optim_args=optim_args)
 }
 
 #' Get Cross-Validated Log-Likelihood
@@ -912,7 +923,8 @@ plot_coefs.survreg_map <- function(object, standardized=FALSE, ...) {
     object$res_std$parameter <- factor(object$res_std$parameter, levels = object$dist_info$pars_real)
     ggplot(object$res_std, aes(x=term, y = estimate, color = parameter, shape = ci.low>0|ci.hi<0)) +
       scale_shape_discrete(guide=FALSE)+
-      geom_pointrange(aes(ymin = ci.low, ymax = ci.hi)) +
+      geom_point()+
+      geom_linerange(aes(ymin = ci.low, ymax = ci.hi)) +
       facet_wrap(~parameter, scales = 'free') +
       geom_hline(yintercept = 0) +
       theme_bw() +
@@ -923,7 +935,8 @@ plot_coefs.survreg_map <- function(object, standardized=FALSE, ...) {
   } else {
     object$res$parameter <- factor(object$res$parameter, levels = object$dist_info$pars)
     ggplot(object$res, aes(x=term, y = estimate, color = parameter)) +
-      geom_pointrange(aes(ymin = ci.low, ymax = ci.hi)) +
+      geom_point()+
+      geom_linerange(aes(ymin = ci.low, ymax = ci.hi)) +
       facet_wrap(~parameter, scales = 'free') +
       theme_bw() +
       theme(axis.text.x = element_text(angle = 45, hjust = 1)) +

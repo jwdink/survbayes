@@ -5,7 +5,7 @@
 \title{Fit a bayesian survival model using MAP}
 \usage{
 fit_survreg_map(survreg_data, newdata = NULL, optim_args = list(method =
-  "BFGS", control = list(trace = as.integer(interactive()))))
+  "BFGS", control = list(trace = as.integer(interactive()), maxit = 250)))
 }
 \arguments{
 \item{survreg_data}{An object from \code{make_survreg_data}}

@@ -6,7 +6,8 @@
 \usage{
 survreg_map(formula, anc = NULL, data, distribution = "roy_parm_splines",
   dist_config = list(knots = NULL), standardize_y = TRUE,
-  na.action = na.exclude, priors = NULL)
+  na.action = na.exclude, priors = NULL, optim_args = list(method =
+  "BFGS", control = list(trace = as.integer(interactive()), maxit = 250)))
 }
 \arguments{
 \item{formula}{Formula with both rhs and lhs. Rhs will be applied to 'location' parameter of the
@@ -32,6 +33,8 @@ helpful because it makes the default priors more meaningful across datasets.}
 \item{na.action}{Function for NAs}
 
 \item{priors}{An object resulting from \code{set_prior} (or a list of these).}
+
+\item{optim_args}{A list of arguments to be passed to \code{optim}.}
 }
 \value{
 An object of class \code{survreg_map}, with print/plot/predict/logLik methods.
