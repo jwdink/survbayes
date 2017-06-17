@@ -57,7 +57,7 @@ NULL
 #' @param xlevels The levels for each factor (for when contrasts are not explicit). See
 #'   \code{?update.survreg_map}.
 #' @param optim_args Arguments to pass to \code{stats::optim}
-#' @param terms A terms object. See \code{?update.survreg_map}.
+#' @param predvars The 'predvars' attribute of a terms object. See \code{?update.survreg_map}.
 #'
 #' @return An object of type \code{survreg_map}
 #' @export
@@ -74,7 +74,7 @@ survreg_map <-
     contrasts = NULL,
     xlevels = NULL,
     optim_args = list(method = "BFGS", control = list(trace=as.integer(interactive()),maxit=250)),
-    terms = NULL
+    predvars = NULL
   ) {
 
     the_call <- match.call()
@@ -96,11 +96,8 @@ survreg_map <-
 
     ## model-componenets:
     model_components <-
-      prepare_model_components(forms, data, terms=terms, dist_info, standardize_x, na.action,
+      prepare_model_components(forms, data, predvars=predvars, dist_info, standardize_x, na.action,
                                contrasts=contrasts, xlev = xlevels, drop.unused.levels = FALSE)
-    the_call$standardize_x <- parse(text = deparse(model_components$standardize_x))[[1]]
-    the_call$contrasts <- parse(text = deparse(model_components$contrasts))[[1]]
-    the_call$xlevels <- parse(text = deparse(model_components$xlevels))[[1]]
 
     ## prior:
     df_prior <- get_prior_df(priors, dist_info, model_components)
@@ -114,7 +111,7 @@ survreg_map <-
     out$res_std$to_join <- with(out$res_std, paste(parameter, term, sep="__sep__"))
 
     out$res_std <- out$res_std %>%
-      left_join(.,enframe(fit_res$optim$par,'to_join','estimate'),by='to_join') %>%
+      left_join(.,enframe(fit_res$estimate,'to_join','estimate'),by='to_join') %>%
       left_join(.,enframe(fit_res$se,'to_join','std.err'),by='to_join') %>%
       mutate(ci.low = estimate-std.err*1.96,
              ci.hi = estimate+std.err*1.96,
@@ -165,10 +162,16 @@ survreg_map <-
       select(-parameter_real) %>%
       select(parameter, everything())
 
+    #
     out[c('loglik','optim')] <- fit_res[c('loglik','optim')]
-    out$call <- the_call
-    out$terms <- model_components$terms
+    out[c('standardize_x','predvars','contrasts','xlevels')] <-
+      model_components[c('standardize_x','predvars','contrasts','xlevels')]
+    out$data <- data
+    out$df_prior <- df_prior
+    out$forms <- forms
+    out$na.action <- na.action
     out$dist_info <- dist_info
+    out$call <- the_call
 
     class(out) <- 'survreg_map'
 
@@ -180,8 +183,40 @@ formula.survreg_map <- function(x, ...) {
   eval(x$call$formula)
 }
 
-update.survreg_map <- function(object, formula. = NULL, anc. = NULL, ...) {
+update.survreg_map <- function(object, formula. = NULL, anc. = NULL,
+                               reeval_scaling_and_terms = NULL,
+                               ...) {
   call <- getCall(object)
+
+  the_dots <- pryr::dots(...)
+  update_data <- "data" %in% names(the_dots)
+  update_others <- (length(the_dots)>as.numeric(update_data)) | (!is.null(formula.)) | (!is.null(anc.))
+
+  if (is.null(reeval_scaling_and_terms)) {
+    if (update_others) {
+      reeval_scaling_and_terms <- TRUE
+      if (update_data)
+        warning(call. = FALSE,
+                "Other components are being updated aside from the data, so will re-evaluate scaling/terms. ",
+                "To override this, set `reeval_scaling_and_terms` to FALSE")
+    } else {
+      reeval_scaling_and_terms <- FALSE
+    }
+  } else {
+    if (!reeval_scaling_and_terms&update_others&!update_data)
+      warning(call. = FALSE,
+              "You're trying to use the original scaling/terms, even though you're not updated the data component.")
+  }
+
+  if (!reeval_scaling_and_terms & update_others & update_data) {
+    object <- do.call(update, c(list(object=quote(object), formula. = formula., anc.=anc., reeval_scaling_and_terms=TRUE),
+                                the_dots[names(the_dots)!='data']) )
+    call <- getCall(object)
+    browser()
+    formula. <- NULL
+    anc. <- NULL
+    the_dots <- the_dots[names(the_dots)=='data']
+  }
 
   if (!is.null(formula.))
     call$formula <- update.formula(formula(object), formula.)
@@ -197,9 +232,38 @@ update.survreg_map <- function(object, formula. = NULL, anc. = NULL, ...) {
     call$anc <- parse(text = deparse(original_anc))[[1]]
   }
 
-  new_call <- pryr::modify_call(call, pryr::dots(...))
+  if (!reeval_scaling_and_terms) {
+    call$standardize_x <- parse(text = deparse(object$standardize_x))[[1]]
+    call$contrasts <- parse(text = deparse(object$contrasts))[[1]]
+    call$xlevels <- parse(text = deparse(object$xlevels))[[1]]
+    call$predvars <- deparse(object$predvars) # not sure how to 'double-escape', so prep-model-components just handles it
+  }
+
+  new_call <- pryr::modify_call(call, the_dots)
   eval(new_call, environment(formula(object)))
 }
+
+logLik.survreg_map <- function(object, newdata = NULL, ...) {
+  if (is.null(newdata))
+    newdata <- object$data
+
+  ## get estimates, unroll:
+  ests <- purrr::map(split(object$res_std, object$res_std$parameter), ~with(.x, structure(estimate,names=term)))
+  unrolled_par_all <- purrr::flatten_dbl(ests)
+  unrolled_par_all <- with(object$df_prior, structure( unrolled_par_all, names = paste0(parameter, "__sep__", term)))
+
+  ## model-componenets:
+  model_components <-
+    prepare_model_components(object$forms, newdata, predvars=object$predvars, object$dist_info, object$standardize_x, object$na.action,
+                             contrasts=object$contrasts, xlev = object$xlevels, drop.unused.levels = FALSE)
+
+  ll <- object$loglik(unrolled_par = unrolled_par_all,
+                      model_mats = model_components$list_of_model_mats_std,
+                      Y = model_components$response_object)
+  sum(ll)
+}
+
+
 
 #' @export
 coef.survreg_map <- function(object, ...) {
@@ -239,7 +303,7 @@ plot_coefs.survreg_map <- function(object, standardized=TRUE, ...) {
 
   if (standardized) {
     object$res_std$parameter <- factor(object$res_std$parameter, levels = object$dist_info$pars_real)
-    ggplot(object$res_std, aes(x=term, y = estimate, color = parameter, shape = ci.low>0|ci.hi<0)) +
+    ggplot(object$res_std, aes(x=term, y = estimate, color = parameter, shape = coalesce(ci.low>0|ci.hi<0,FALSE)) ) +
       scale_shape_discrete(guide=FALSE)+
       geom_point()+
       geom_linerange(aes(ymin = ci.low, ymax = ci.hi)) +
@@ -264,8 +328,6 @@ plot_coefs.survreg_map <- function(object, standardized=TRUE, ...) {
   }
 
 }
-
-
 
 standardize_knots <- function(formula, anc, data, dist_config) {
   get_knot_boundaries <- function(formula, data) {
@@ -320,8 +382,11 @@ survreg_map.fit <- function(model_components, df_prior, dist_info, optim_args) {
   ## get inits, unroll:
   inits <- purrr::map(split(df_prior, df_prior$parameter), ~with(.x, structure(location,names=term)))
   inits <- purrr::map(inits, ~array(.x, dim = length(.x))) # really just needed for stan
-  unrolled_par_init <- purrr::flatten_dbl(inits)
-  unrolled_par_init <- with(df_prior, structure( unrolled_par_init, names = paste0(parameter, "__sep__", term)))
+  unrolled_par_all <- purrr::flatten_dbl(inits)
+  unrolled_par_all <- with(df_prior, structure( unrolled_par_all, names = paste0(parameter, "__sep__", term)))
+  fixed_lgl <- purrr::flatten_lgl(purrr::map(split(df_prior, df_prior$parameter),'fixed'))
+  names(fixed_lgl) <- names(unrolled_par_all)
+  unrolled_par_init <- unrolled_par_all[!fixed_lgl]
 
   ##
   roll_pars <- function(unrolled_par) {
@@ -390,9 +455,10 @@ survreg_map.fit <- function(model_components, df_prior, dist_info, optim_args) {
     })
 
   ##
-  neg_loglik_fun <- function(unrolled_par, model_mats, Y) {
+  neg_loglik_fun <- function(unrolled_par_variable, model_mats, Y) {
+    unrolled_par_all[!fixed_lgl] <- unrolled_par_variable
     # dist params, liklihood:
-    par <- roll_pars(unrolled_par)
+    par <- roll_pars(unrolled_par_all)
     dist_params <- get_distribution_params(par, list_of_mm=model_mats)
     lik <- lik_fun(dist_params, Y = Y)
 
@@ -413,24 +479,29 @@ survreg_map.fit <- function(model_components, df_prior, dist_info, optim_args) {
   out$optim <- do.call(optim,optim_args)
 
   ## collect results, add prior
+  out$estimate <- unrolled_par_all
+  out$estimate[!fixed_lgl] <- out$optim$par
+  out$cov <- matrix(nrow = length(unrolled_par_all), ncol = length(unrolled_par_all),
+                    dimnames = list(names(unrolled_par_all),names(unrolled_par_all)))
   if (!is.null(out$optim$hessian) &&
       all(!is.na(out$optim$hessian)) &&
       all(!is.nan(out$optim$hessian)) &&
       all(is.finite(out$optim$hessian)) &&
       all(eigen(out$optim$hessian)$values > 0)) {
-    out$cov <- solve(out$optim$hessian)
-    out$se <- sqrt(diag(out$cov))
+    replace_idx <- matrix(!fixed_lgl,nrow = length(fixed_lgl), ncol = length(fixed_lgl)) &
+      matrix(!fixed_lgl,nrow = length(fixed_lgl), ncol = length(fixed_lgl), byrow = TRUE)
+    out$cov[replace_idx] <- solve(out$optim$hessian)
+
   } else {
     warning(immediate. = TRUE, call. = FALSE,
             "Optimisation has probably not converged - Hessian is not positive definite. ")
-    out$cov <- NA
-    out$se <- setNames(rep(NA, length(unrolled_par_init)), nm=names(unrolled_par_init))
   }
+  out$se <- sqrt(diag(out$cov))
 
   out$loglik <- function(unrolled_par, model_mats, Y) {
     par <- roll_pars(unrolled_par)
     dist_params <- get_distribution_params(par, list_of_mm=model_mats)
-    lik_fun(dist_params, Y = Y)
+    log(lik_fun(dist_params, Y = Y))
   }
 
   return(out)
@@ -442,24 +513,27 @@ stan_to_r_pdf <- function(stan_pdf) {
   mapper[stan_pdf]
 }
 
-prepare_model_components <- function(forms, data, terms, dist_info,
+prepare_model_components <- function(forms, data, predvars, dist_info,
                                      standardize_x, na.action, contrasts, xlev, drop.unused.levels) {
 
   ## make model-frame, get mapping: --
   formula_merged <- merge_formulae(forms, data)
   model_frame_merged <-
     model.frame(formula_merged, data = data, na.action = na.action, drop.unused.levels = drop.unused.levels)
-  xlevels <- .getXlevels(attr(model_frame_merged, "terms"), model_frame_merged)
+  if (is.null(predvars)) predvars <- attr(terms(model_frame_merged),'predvars')
+  if (is.character(predvars)) predvars <- parse(text = predvars)[[1]]
 
-  if (is.null(terms))
-    terms <- terms(model_frame_merged)
+  xlevels <- .getXlevels(attr(model_frame_merged, "terms"), model_frame_merged)
+  if (length(xlevels)==0) xlevels<-NULL
 
   # separate out response object: --
   response_idx <- attr(terms(formula_merged),'response')
   if (response_idx!=0) {
     response_object <- model_frame_merged[[response_idx]]
     model_frame_merged <- model_frame_merged[,-response_idx,drop=FALSE]
-    attr(model_frame_merged,'terms') <- delete.response(terms)
+    terms_tmp <- delete.response(terms(formula_merged))
+    attr(terms_tmp,'predvars') <- predvars
+    attr(model_frame_merged,'terms') <- terms_tmp
   } else {
     response_object <- NULL
   }
@@ -474,16 +548,6 @@ prepare_model_components <- function(forms, data, terms, dist_info,
     stopifnot(is.list(standardize_x_arg))
     stopifnot(c('center','scale')%in%names(standardize_x_arg))
     for (nm in c('center','scale')) {
-      # check for names not there:
-      unexpected_names <- setdiff(names(standardize_x_arg[[nm]]), colnames(model_frame_merged))
-      if (length(unexpected_names)>0)
-        stop(call. = FALSE,
-             "The following names are not in the model.frame:\n",
-             paste0(deparse(unexpected_names),collapse="\n"),
-             "\n\nNames in model.matrix:\n",
-             paste0(deparse(colnames(model_frame_merged)),collapse="\n"),
-             "\n(if you'd like to center a factor variable, use contrasts)")
-
       # check for factor names:
       if ( any( names(standardize_x_arg[[nm]]) %in% names(which(!mf_is_numeric_lgl)) ) )
         stop(call. = FALSE, "The following variables cannot be standardized because they aren't numeric:",
@@ -512,7 +576,7 @@ prepare_model_components <- function(forms, data, terms, dist_info,
     for (col in names(which(contr_full_lgl)))
       attr(model_frame_std[[col]],'contrasts') <- contr.full(n = levels(model_frame_std[[col]]), f = model_frame_std[[col]])
     matrix_contrasts_lgl <- purrr::map_lgl(purrr::map(model_frame_std, attr,'contrasts'),is.matrix)
-    if (any(matrix_contrasts_lgl))  # any variables with matrix-contrasts doesn't need an xlev (i think it'd override it)
+    if (any(matrix_contrasts_lgl)&!is.null(xlevels))  # any variables with matrix-contrasts doesn't need an xlev (i think it'd override it)
       xlevels <- xlevels[intersect(names(xlevels),names(which(!matrix_contrasts_lgl)))]
 
     contrasts <- purrr::compact(purrr::map(model_frame_std, attr,'contrasts'))
@@ -534,7 +598,7 @@ prepare_model_components <- function(forms, data, terms, dist_info,
               list_of_model_mats_std= list_of_model_mats_std,
               response_object = response_object,
               standardize_x= standardize_x,
-              terms = terms,
+              predvars = predvars,
               xlevels = xlevels,
               contrasts = attr(model_matrix_merged_std,'contrasts'))
 
@@ -649,14 +713,11 @@ standardize_formulae <- function(formula, anc, dist_info) {
   return(out)
 }
 
-# concatenate_formulae <- function(forms, data) {
-#   list_of_term_labels <- purrr::map(purrr::map(forms, terms, data=data), attr, 'term.labels')
-#   purrr::map2(list_of_term_labels, names(list_of_term_labels), .f = ~paste0(".param_",.y,"(",.x,")"))
-# }
-
 merge_formulae <- function(forms, data) {
   list_of_term_labels <- purrr::map(purrr::map(forms, terms, data=data), attr, 'term.labels')
-  form_out <- reformulate(unique(purrr::flatten_chr(list_of_term_labels)))
+  term_labels_unique <- unique(purrr::flatten_chr(list_of_term_labels))
+  if (length(term_labels_unique)>0) form_out <- reformulate(term_labels_unique)
+  else form_out <- ~1
   lazyeval::f_lhs(form_out) <- lazyeval::f_lhs(forms[[1]])
   environment(form_out) <- environment(forms[[1]])
   form_out
@@ -721,7 +782,8 @@ get_dist_info <- function(dist, k = NULL) {
                  data_frame(term = colnames(mat),
                             family = "normal", #double_exponential
                             location = rep(0, ncol(mat)),
-                            spread = rep(1, ncol(mat)) )
+                            spread = rep(1, ncol(mat)),
+                            fixed = FALSE)
                })
              priors$location <- ifelse(priors$parameter == 'gamma0' & priors$term == "(Intercept)",
                                  yes = gamma0_init,
@@ -796,16 +858,19 @@ contr.full <- function(n, contrasts=TRUE, sparse=FALSE, f = NULL) {
 #' @param parameter The parameter
 #' @param terms The terms. Can be a character vector, or the result of \code{dplyr::vars}, which can
 #'   be convenient for setting the prior on all but some terms.
+#' @param family The family for the prior distribution
 #' @param location A value for location on the distribution.
 #' @param spread A value for the spread (scale) on the distribution
+#' @param fixed In the fitting process, should this parameter be fixed at its prior value, or updated?
 #'
 #' @return An object of class 'prior', to be (optionally inserted into a list with other priors and)
 #'   passed to `priors` arg in `survreg_map`
 #' @export
-set_prior <- function(parameter = NULL, terms, location = NULL, spread = NULL) {
+set_prior <- function(parameter = NULL, terms, family = NULL, location = NULL, spread = NULL, fixed=NULL) {
   stopifnot(is.character(terms) || inherits(terms, "col_list"))
 
   if (is.character(terms)) terms <- paste0("`",terms,"`")
+
   out <- function(prior_df) {
     if (!is.null(parameter)) {
       if (!parameter %in% prior_df$parameter) {
@@ -819,11 +884,23 @@ set_prior <- function(parameter = NULL, terms, location = NULL, spread = NULL) {
       param_lgl <- rep(TRUE, nrow(prior_df))
     }
     terms_to_modify <- unname(dplyr::select_vars_(vars = unique(prior_df$term[param_lgl]), args = terms))
-    browser()
-    if (!is.null(location))
+
+    if (!is.null(location)) {
+      stopifnot(length(location)==1)
       prior_df$location[prior_df$term%in%terms_to_modify & param_lgl] <- location
-    if (!is.null(spread))
+    }
+    if (!is.null(spread)) {
+      stopifnot(length(spread)==1)
       prior_df$spread[prior_df$term%in%terms_to_modify & param_lgl] <- spread
+    }
+    if (!is.null(family)) {
+      stopifnot(length(family)==1)
+      prior_df$family[prior_df$term%in%terms_to_modify & param_lgl] <- family
+    }
+    if (!is.null(fixed)) {
+      stopifnot(length(fixed)==1)
+      prior_df$fixed[prior_df$term%in%terms_to_modify & param_lgl] <- fixed
+    }
     prior_df
   }
   class(out) <- c('prior',class(out))
