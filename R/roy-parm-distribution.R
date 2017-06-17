@@ -3,7 +3,7 @@
 #'
 #' @param log_time log(time)
 #' @param gamma Matrix of coefficients to be multiplied elementwise by basis
-#' @param all_knots Knots, including boundary knots, on the scale of log(time)
+#' @param all_log_knots Knots, including boundary knots, on the scale of log(time)
 #' @param scaling_factor A constant which gammas > 1 will be divided by, so that coefficients are on
 #'   similar scales; helpful for optimization/MCMC
 #' @param b computing the basis can be costly. if you have already have the basis, you can pass it
@@ -11,15 +11,15 @@
 #'
 #' @return The log-cumulative hazard.
 #' @export
-roy_parm_log_cumu_haz <- function(log_time, gamma, all_knots, scaling_factor, b= NULL) {
+roy_parm_log_cumu_haz <- function(log_time, gamma, all_log_knots, scaling_factor, b= NULL) {
   if (is.null(b))
-    b <- roy_parm_basis(x = log_time, all_knots = all_knots, scaling_factor = scaling_factor)
+    b <- roy_parm_basis(x = log_time, all_log_knots = all_log_knots, scaling_factor = scaling_factor)
   if (!is.matrix(gamma) || nrow(gamma)==1) {
     # check if same length as b. if so, replicate into matrix
     if ( length(gamma) != ncol(b) )
       stop(call. = FALSE, "If `gamma` is a vector, must have length equal to the number of num-knots + 2.")
     gamma <- matrix(data = rep(gamma, nrow(b)), nrow=nrow(b), byrow = TRUE)
-  } else if (nrow(gamma)!=length(log_time) | ncol(gamma)!=length(all_knots) ) {
+  } else if (nrow(gamma)!=length(log_time) | ncol(gamma)!=length(all_log_knots) ) {
     stop(call. = FALSE,
          "If `gamma` is a matrix, must have num-rows equal to `length(log_time)`, and num-cols equal to num-knots + 2")
   }
@@ -29,18 +29,18 @@ roy_parm_log_cumu_haz <- function(log_time, gamma, all_knots, scaling_factor, b=
 #' Get the basis matrix for the Royston/Parmar-spline parameterization
 #'
 #' @param x Log-time,
-#' @param all_knots Knots, including boundary knots, on the scale of log(time)
+#' @param all_log_knots Knots, including boundary knots, on the scale of log(time)
 #' @param scaling_factor A constant which gammas > 1 will be divided by, so that coefficients are on
 #'   similar scales; helpful for optimization/MCMC
 #'
 #' @return The basis matrix
 #' @export
 #'
-roy_parm_basis <- function(x, all_knots, scaling_factor) {
+roy_parm_basis <- function(x, all_log_knots, scaling_factor) {
   nx <- length(x)
-  nk <- length(all_knots)
+  nk <- length(all_log_knots)
   b <- matrix(nrow = nx, ncol = nk)
-  knots <- matrix(rep(all_knots, nx), byrow = TRUE, ncol = nk)
+  knots <- matrix(rep(all_log_knots, nx), byrow = TRUE, ncol = nk)
   if (nk>0) {
     b[,1] <- rep(1,nx)
     b[,2] <- x
