@@ -7,7 +7,7 @@
 #' @import stringr
 #' @import survival
 #'
-#' @importFrom tibble rownames_to_column lst
+#' @importFrom tibble rownames_to_column lst enframe
 #' @importFrom purrr map map2 pmap map_dbl map_chr map_lgl
 #'             map2_chr map2_dbl map2_lgl transpose flatten_chr flatten_dbl flatten_lgl
 #'             walk walk2 map_df map2_df
@@ -18,9 +18,10 @@
 #'             predict var quantile model.response model.frame
 #'             na.pass na.exclude na.fail model.matrix model.weights
 #'             .getXlevels .checkMFClasses reformulate logLik model.extract optim
-#'             contr.treatment formula setNames
+#'             contr.treatment formula setNames family getCall update.formula
 #' @importFrom grDevices dev.off pdf
 #' @importFrom glue glue
+#' @importFrom pryr dots
 #'
 #' @docType package
 #' @name survbayes
@@ -28,258 +29,15 @@ NULL
 #> NULL
 
 
-#' Survival Regression with MAP
+
+#' Get Cross-Validated Log-Likelihood
 #'
-#' @param formula Formula, with both rhs and lhs, for the main parameter of the distribution.
-#' @param anc A list of formulae, rhs only, named for other parameters of the distribution.
-#' @param data A data.frame
-#' @param distribution Character-string for distribution.
-#' @param dist_config A list with options controlling the distribution.
-#' @param na.action Function for NAs
-#' @param priors Either object resulting from \code{set_prior} (or a list of these), or a data.frame
-#'   with columns 'parameter', 'term', 'family', 'location', 'spread'. An optional logical column
-#'   'fixed' can be used to specify parameters that should be fixed at their initial value and not
-#'   updated during optimization.
-#' @param standardize_x If this is a logical, it controls whether numeric variables in the
-#'   model-frame should be centered and scaled before being passed for optimization, which is
-#'   recommended to improve optimization performance, and because it makes default (standard-normal)
-#'   priors meaningful/applicable. Note that matrix variables--like those generated from
-#'   \code{stats::scale} or \code{states::poly}--will not be (re)centered/scaled. This argument can
-#'   also be a list with elements 'center' and 'scale', which are each named vectors for each
-#'   numeric element of the model-frame. When the model is fit, the call will be modified to replace
-#'   `TRUE` with such a list. This means that in calls to \code{update.survreg_map}, the same
-#'   standardization will apply to new data (again, with the exception of matrix-variables; to save
-#'   the parameters for these you can pass a `terms` object to `update`; see
-#'   \code{?update.survreg_map}).
-#' @param contrasts Contrasts that will determine how factors are formatted. Often the user doesn't
-#'   want to use this argument, but instead it's useful for `update`. See
-#'   \code{?update.survreg_map}.
-#' @param xlevels The levels for each factor (for when contrasts are not explicit). See
-#'   \code{?update.survreg_map}.
-#' @param optim_args Arguments to pass to \code{stats::optim}
-#' @param predvars The 'predvars' attribute of a terms object. See \code{?update.survreg_map}.
+#' @param object An object to be cross-validated
 #'
-#' @return An object of type \code{survreg_map}
+#' @return A vector of log-liklihoods, one for each fold
 #' @export
-survreg_map <-
-  function(
-    formula,
-    anc = NULL,
-    data,
-    distribution = 'roy_parm_splines',
-    dist_config = list(knots=NULL),
-    na.action = na.exclude,
-    priors = NULL,
-    standardize_x = TRUE,
-    contrasts = NULL,
-    xlevels = NULL,
-    optim_args = list(method = "BFGS", control = list(trace=as.integer(interactive()),maxit=250)),
-    predvars = NULL
-  ) {
+crossv_loglik <- function(object, ...)  UseMethod('crossv_loglik')
 
-    the_call <- match.call()
-
-    stopifnot(is.data.frame(data))
-
-    ## formula, distribution:
-    if (is.null(lazyeval::f_lhs(formula))) stop(call. = FALSE, "`formula` has no left-hand side.")
-    dist_info <- get_dist_info(distribution, k = max(length(anc),1) )
-    forms <- standardize_formulae(formula, anc, dist_info)
-    anc <- map(forms[-1], ~.x[-2])
-    the_call$anc <- parse(text = deparse(anc))[[1]]
-
-    # deal with knots:
-    if (dist_info$spline_dist)
-      dist_config <- standardize_knots(formula, anc, data, dist_config)
-    the_call$dist_config <- dist_config
-    dist_info$config <- dist_config
-
-    ## model-componenets:
-    model_components <-
-      prepare_model_components(forms, data, predvars=predvars, dist_info, standardize_x, na.action,
-                               contrasts=contrasts, xlev = xlevels, drop.unused.levels = FALSE)
-
-    ## prior:
-    df_prior <- get_prior_df(priors, dist_info, model_components)
-
-    ## fit:
-    fit_res <- survreg_map.fit(model_components, df_prior, dist_info, optim_args)
-
-    ## organize results:
-    out <- list()
-    out$res_std <- df_prior[,c('parameter','term','family','location','spread'),drop=FALSE]
-    out$res_std$to_join <- with(out$res_std, paste(parameter, term, sep="__sep__"))
-
-    out$res_std <- out$res_std %>%
-      left_join(.,enframe(fit_res$estimate,'to_join','estimate'),by='to_join') %>%
-      left_join(.,enframe(fit_res$se,'to_join','std.err'),by='to_join') %>%
-      mutate(ci.low = estimate-std.err*1.96,
-             ci.hi = estimate+std.err*1.96,
-             std.err=NULL) %>%
-      left_join(x = .,
-                y = data_frame(term = names(model_components$standardize_x[[1]]),
-                               center = model_components$standardize_x$center,
-                               scale = model_components$standardize_x$scale),
-                by='term') %>%
-      select(parameter, term, estimate, ci.low, ci.hi,
-             scaled.center = center, scaled.scale = scale,
-             prior.family = family, prior.location = location, prior.spread = spread)
-
-    ## get coefficients on raw (non-standardized) scale:
-    df_est_real <- out$res_std %>%
-      split(., .$parameter) %>%
-      map_df(function(data) {
-        intercept_lgl <- (data$term == "(Intercept)")
-        data[c('estimate','ci.low','ci.hi')] <-
-          map(data[c('estimate','ci.low','ci.hi')],
-              function(ests) {
-                scaling_vec <- coalesce(data$scaled.scale, 1)
-                centering_vec <- coalesce(data$scaled.center, 0)
-                estimate_raw <- ests*scaling_vec
-                intercept_raw <- ests[intercept_lgl] - sum( (estimate_raw*centering_vec)[!intercept_lgl] )
-                out <- numeric(length(ests))
-                out[intercept_lgl] <- intercept_raw
-                out[!intercept_lgl] <- estimate_raw[!intercept_lgl]
-                out
-              })
-        data
-      }) %>%
-      select(-scaled.center, -scaled.scale, -matches('prior\\.'))
-
-    ## get coefficients in terms of non-transformed parameters:
-    out$res <- map2_df(.x = split(df_est_real, df_est_real$parameter)[dist_info$pars_real],
-                       .y = dist_info$inverse_transforms,
-                       function(data,func_char) {
-                         data[c('estimate','ci.low','ci.hi')] <-
-                           map(data[c('estimate','ci.low','ci.hi')],
-                               ~get(func_char, mode = 'function')(.x))
-                         data
-                       }) %>%
-      rename(parameter_real = parameter) %>%
-      left_join(data_frame(parameter_real = dist_info$pars_real,
-                           parameter = dist_info$pars),
-                by = 'parameter_real') %>%
-      select(-parameter_real) %>%
-      select(parameter, everything())
-
-    #
-    out[c('loglik','optim')] <- fit_res[c('loglik','optim')]
-    out[c('standardize_x','predvars','contrasts','xlevels')] <-
-      model_components[c('standardize_x','predvars','contrasts','xlevels')]
-    out$data <- data
-    out$df_prior <- df_prior
-    out$forms <- forms
-    out$na.action <- na.action
-    out$dist_info <- dist_info
-    out$call <- the_call
-
-    class(out) <- 'survreg_map'
-
-    return(out)
-
-  }
-
-formula.survreg_map <- function(x, ...) {
-  eval(x$call$formula)
-}
-
-update.survreg_map <- function(object, formula. = NULL, anc. = NULL,
-                               reeval_scaling_and_terms = NULL,
-                               ...) {
-  call <- getCall(object)
-
-  the_dots <- pryr::dots(...)
-  update_data <- "data" %in% names(the_dots)
-  update_others <- (length(the_dots)>as.numeric(update_data)) | (!is.null(formula.)) | (!is.null(anc.))
-
-  if (is.null(reeval_scaling_and_terms)) {
-    if (update_others) {
-      reeval_scaling_and_terms <- TRUE
-      if (update_data)
-        warning(call. = FALSE,
-                "Other components are being updated aside from the data, so will re-evaluate scaling/terms. ",
-                "To override this, set `reeval_scaling_and_terms` to FALSE")
-    } else {
-      reeval_scaling_and_terms <- FALSE
-    }
-  } else {
-    if (!reeval_scaling_and_terms&update_others&!update_data)
-      warning(call. = FALSE,
-              "You're trying to use the original scaling/terms, even though you're not updated the data component.")
-  }
-
-  if (!reeval_scaling_and_terms & update_others & update_data) {
-    object <- do.call(update, c(list(object=quote(object), formula. = formula., anc.=anc., reeval_scaling_and_terms=TRUE),
-                                the_dots[names(the_dots)!='data']) )
-    call <- getCall(object)
-    browser()
-    formula. <- NULL
-    anc. <- NULL
-    the_dots <- the_dots[names(the_dots)=='data']
-  }
-
-  if (!is.null(formula.))
-    call$formula <- update.formula(formula(object), formula.)
-
-  if (!is.null(anc.)) {
-    original_anc <- eval(call$anc, envir = environment(formula(object)))
-    if (!all(names(anc.) %in% names(original_anc) ))
-      stop(call. = FALSE, "The `anc.` argument should be a list with names:\n",
-           paste0(collapse="\n",deparse(names(original_anc))))
-    anc. <- purrr::map(anc., ~.x[-2])
-    for (p in names(anc.))
-      original_anc[[p]] <- update.formula(original_anc[[p]], anc.[[p]])
-    call$anc <- parse(text = deparse(original_anc))[[1]]
-  }
-
-  if (!reeval_scaling_and_terms) {
-    call$standardize_x <- parse(text = deparse(object$standardize_x))[[1]]
-    call$contrasts <- parse(text = deparse(object$contrasts))[[1]]
-    call$xlevels <- parse(text = deparse(object$xlevels))[[1]]
-    call$predvars <- deparse(object$predvars) # not sure how to 'double-escape', so prep-model-components just handles it
-  }
-
-  new_call <- pryr::modify_call(call, the_dots)
-  eval(new_call, environment(formula(object)))
-}
-
-logLik.survreg_map <- function(object, newdata = NULL, ...) {
-  if (is.null(newdata))
-    newdata <- object$data
-
-  ## get estimates, unroll:
-  ests <- purrr::map(split(object$res_std, object$res_std$parameter), ~with(.x, structure(estimate,names=term)))
-  unrolled_par_all <- purrr::flatten_dbl(ests)
-  unrolled_par_all <- with(object$df_prior, structure( unrolled_par_all, names = paste0(parameter, "__sep__", term)))
-
-  ## model-componenets:
-  model_components <-
-    prepare_model_components(object$forms, newdata, predvars=object$predvars, object$dist_info, object$standardize_x, object$na.action,
-                             contrasts=object$contrasts, xlev = object$xlevels, drop.unused.levels = FALSE)
-
-  ll <- object$loglik(unrolled_par = unrolled_par_all,
-                      model_mats = model_components$list_of_model_mats_std,
-                      Y = model_components$response_object)
-  sum(ll)
-}
-
-
-
-#' @export
-coef.survreg_map <- function(object, ...) {
-  purrr::map(split(object$res, object$res$parameter), ~setNames(.x$estimate, nm = .x$term))
-}
-
-#' @export
-print.survreg_map <- function(x, standarized = TRUE, ...) {
-  if (standarized) {
-    cat("\nResults (standardized): ====\n")
-    print(x$res_std)
-  } else {
-    cat("\nResults (unstandardized): ====\n")
-    print(x$res)
-  }
-}
 
 #' Plot model coefficients
 #'
@@ -292,318 +50,6 @@ plot_coefs <- function(object, ...) {
   UseMethod('plot_coefs')
 }
 
-#' Plot coefficients for 'survreg_map'
-#' @describeIn plot_coefs
-#'
-#' @param standardized Should the coefficient-estimates be standardized? If so, the prior will be
-#'   plotted in the background.
-#'
-#' @export
-plot_coefs.survreg_map <- function(object, standardized=TRUE, ...) {
-
-  if (standardized) {
-    object$res_std$parameter <- factor(object$res_std$parameter, levels = object$dist_info$pars_real)
-    ggplot(object$res_std, aes(x=term, y = estimate, color = parameter, shape = coalesce(ci.low>0|ci.hi<0,FALSE)) ) +
-      scale_shape_discrete(guide=FALSE)+
-      geom_point()+
-      geom_linerange(aes(ymin = ci.low, ymax = ci.hi)) +
-      facet_wrap(~parameter, scales = 'free') +
-      geom_hline(yintercept = 0) +
-      theme_bw() +
-      theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
-      geom_pointrange(alpha=.25,
-                      mapping = aes(y=prior.location,
-                                    ymin = prior.location-prior.spread*1.96,
-                                    ymax = prior.location+prior.spread*1.96)) +
-      guides(colour=FALSE)
-  } else {
-    object$res$parameter <- factor(object$res$parameter, levels = object$dist_info$pars)
-    ggplot(object$res, aes(x=term, y = estimate, color = parameter)) +
-      geom_point()+
-      geom_linerange(aes(ymin = ci.low, ymax = ci.hi)) +
-      facet_wrap(~parameter, scales = 'free') +
-      theme_bw() +
-      theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
-      guides(colour=FALSE)
-  }
-
-}
-
-standardize_knots <- function(formula, anc, data, dist_config) {
-  get_knot_boundaries <- function(formula, data) {
-    response_object <- model.frame(formula = update(formula, .~1), data=data, na.action=na.pass)[[1]]
-    if (class(response_object)[1]=="Survint")
-      range(response_object[,3,drop=TRUE])
-    else if (class(response_object)[1]=="Surv")
-      stop(call. = FALSE,
-           "Please use `Survint` for response in formula, not `Surv`; this will be fixed in a future release.")
-    else
-      stop(call. = FALSE,
-           "Response in formula not a recognizable survival-object.")
-  }
-  if ( 'all_knots' %in% names(dist_config)) {
-    stopifnot( length(dist_config$all_knots) == (length(anc)+1) )
-  } else {
-    if (! 'all_knots' %in% names(dist_config)) {
-      if (! 'knots' %in% names(dist_config))
-        stop(call. = FALSE,
-             "Please specify `dist_config$knots` on the original timescale.")
-      stopifnot( length(dist_config$knots) == (length(anc)-1) )
-      bound_knots <- get_knot_boundaries(formula = formula, data = data)
-      dist_config$all_knots <- c(bound_knots[1], dist_config$knots, bound_knots[2])
-      dist_config$knots <- NULL
-    }
-  }
-  dist_config
-}
-
-get_prior_df <- function(priors, dist_info, model_components) {
-  if (is.data.frame(priors)) {
-    df_prior <- priors
-  } else {
-    df_prior <- dist_info$default_priors(model_components$list_of_model_mats_std, model_components$response_object)
-    if (!is.null(priors)) {
-      if (class(priors)[1]=='prior')
-        priors <- list(priors)
-      if (is.list(priors)) {
-        walk(priors, ~stopifnot(class(.x)[1]=='prior'))
-        for (prior in priors)
-          df_prior <- prior(df_prior)
-      } else {
-        stop("`priors` should be a list of outputs from `set_prior`.")
-      }
-    }
-  }
-  df_prior
-}
-
-survreg_map.fit <- function(model_components, df_prior, dist_info, optim_args) {
-
-  ## get inits, unroll:
-  inits <- purrr::map(split(df_prior, df_prior$parameter), ~with(.x, structure(location,names=term)))
-  inits <- purrr::map(inits, ~array(.x, dim = length(.x))) # really just needed for stan
-  unrolled_par_all <- purrr::flatten_dbl(inits)
-  unrolled_par_all <- with(df_prior, structure( unrolled_par_all, names = paste0(parameter, "__sep__", term)))
-  fixed_lgl <- purrr::flatten_lgl(purrr::map(split(df_prior, df_prior$parameter),'fixed'))
-  names(fixed_lgl) <- names(unrolled_par_all)
-  unrolled_par_init <- unrolled_par_all[!fixed_lgl]
-
-  ##
-  roll_pars <- function(unrolled_par) {
-    df_par <- tidyr::separate(enframe(unrolled_par), col = name, into = c('parameter', 'term'), sep = "__sep__")
-    par <- purrr::map(split(df_par, df_par$parameter), ~with(.x, structure(value, names=term)))
-    par <- par[dist_info$pars_real]
-  }
-
-  ##
-  itrans <- map(dist_info$inverse_transforms, get, mode='function')
-  get_distribution_params <- function(par, list_of_mm) {
-    list_of_pars_per_obs <- list()
-    for (i in seq_along(dist_info$pars)) {
-      param_name <- dist_info$pars[[i]]
-      param_name_real <- dist_info$pars_real[[i]]
-      list_of_pars_per_obs[[param_name]] <-
-        itrans[[param_name]](as.matrix(list_of_mm[[param_name]]) %*% matrix( par[[param_name_real]] ) )
-    }
-    as_data_frame(purrr::map(list_of_pars_per_obs, as.numeric))
-  }
-
-  ## distribution functions:
-  if (dist_info$spline_dist)
-    dfuns <- dist_info$distribution_function_factory(all_log_knots = dist_info$config$all_knots)
-  else
-    dfuns <- dist_info$distribution_function_factory()
-
-  ## likelihood function:
-  lik_fun <- function(dist_params, Y) {
-    if (class(Y)[1] == "Survint") {
-      if (dist_info$spline_dist) {
-        event_lgl <- (Y[,4,drop=TRUE] == 1)
-        exact_event_lgl <- event_lgl & dplyr::near(Y[,3,drop=TRUE],Y[,2,drop=TRUE])
-        lik_uncond <- dfuns$cdf_function(q = Y[,3,drop=TRUE],gamma = as.matrix(dist_params), lower.tail = FALSE)
-        lik_at_lb <- dfuns$cdf_function(q = Y[,2,drop=TRUE],gamma = as.matrix(dist_params), lower.tail = FALSE)
-        lik_uncond[event_lgl] <- (lik_at_lb - lik_uncond)[event_lgl]
-        if ( any(exact_event_lgl) )
-          lik_uncond[exact_event_lgl] <- dfuns$pdf_function(q=Y[exact_event_lgl,3,drop=TRUE],
-                                                            gamma=as.matrix(dist_params[exact_event_lgl,,drop=FALSE]))
-        lik_at_start <- dfuns$cdf_function(q = Y[,1,drop=TRUE],gamma = as.matrix(dist_params), lower.tail = FALSE)
-      } else {
-        # add when you add other distributions
-        stop("Please report this error to the package maintainer.", call. = FALSE)
-      }
-      lik <- lik_uncond / lik_at_start
-      lik[is.na(lik)] <- 10*.Machine$double.eps
-      lik[near(lik,0)] <- 10*.Machine$double.eps
-      lik[lik<0] <- 10*.Machine$double.eps
-      return(lik)
-    } else {
-      # add support for `Surv` response object
-      stop(call. = FALSE, "Please report this error to the package maintainer.")
-    }
-  }
-
-  ## prior function(s):
-  prior_funs <- split(df_prior, df_prior$parameter) %>%
-    purrr::map(function(df) {
-      if (n_distinct(df$family)==1) {
-        pfun <- get(stan_to_r_pdf(df$family[1]), mode = 'function')
-        function(x) pfun(x, df$location, df$spread)
-      } else {
-        pfuns <- purrr::map(stan_to_r_pdf(df$family), get, mode='function')
-        function(x) purrr::map_dbl(seq_along(x), ~pfuns[[i]](x[i], df$location[i], df$spread[i]))
-      }
-    })
-
-  ##
-  neg_loglik_fun <- function(unrolled_par_variable, model_mats, Y) {
-    unrolled_par_all[!fixed_lgl] <- unrolled_par_variable
-    # dist params, liklihood:
-    par <- roll_pars(unrolled_par_all)
-    dist_params <- get_distribution_params(par, list_of_mm=model_mats)
-    lik <- lik_fun(dist_params, Y = Y)
-
-    # prior:
-    prior_p <- purrr::flatten_dbl(purrr::map2(prior_funs, par, ~.x(.y)))
-
-    # neg loglik:
-    - (sum(log(lik)) + sum(log(prior_p)))
-  }
-
-  ## optimize:
-  out <- list()
-  optim_args$par <- unrolled_par_init
-  optim_args$fn <- neg_loglik_fun
-  optim_args$hessian <- TRUE
-  optim_args$model_mats <- model_components$list_of_model_mats_std
-  optim_args$Y <- model_components$response_object
-  out$optim <- do.call(optim,optim_args)
-
-  ## collect results, add prior
-  out$estimate <- unrolled_par_all
-  out$estimate[!fixed_lgl] <- out$optim$par
-  out$cov <- matrix(nrow = length(unrolled_par_all), ncol = length(unrolled_par_all),
-                    dimnames = list(names(unrolled_par_all),names(unrolled_par_all)))
-  if (!is.null(out$optim$hessian) &&
-      all(!is.na(out$optim$hessian)) &&
-      all(!is.nan(out$optim$hessian)) &&
-      all(is.finite(out$optim$hessian)) &&
-      all(eigen(out$optim$hessian)$values > 0)) {
-    replace_idx <- matrix(!fixed_lgl,nrow = length(fixed_lgl), ncol = length(fixed_lgl)) &
-      matrix(!fixed_lgl,nrow = length(fixed_lgl), ncol = length(fixed_lgl), byrow = TRUE)
-    out$cov[replace_idx] <- solve(out$optim$hessian)
-
-  } else {
-    warning(immediate. = TRUE, call. = FALSE,
-            "Optimisation has probably not converged - Hessian is not positive definite. ")
-  }
-  out$se <- sqrt(diag(out$cov))
-
-  out$loglik <- function(unrolled_par, model_mats, Y) {
-    par <- roll_pars(unrolled_par)
-    dist_params <- get_distribution_params(par, list_of_mm=model_mats)
-    log(lik_fun(dist_params, Y = Y))
-  }
-
-  return(out)
-
-}
-
-stan_to_r_pdf <- function(stan_pdf) {
-  mapper <- c(`normal` = 'dnorm', `double_exponential` = 'dlaplace')
-  mapper[stan_pdf]
-}
-
-prepare_model_components <- function(forms, data, predvars, dist_info,
-                                     standardize_x, na.action, contrasts, xlev, drop.unused.levels) {
-
-  ## make model-frame, get mapping: --
-  formula_merged <- merge_formulae(forms, data)
-  model_frame_merged <-
-    model.frame(formula_merged, data = data, na.action = na.action, drop.unused.levels = drop.unused.levels)
-  if (is.null(predvars)) predvars <- attr(terms(model_frame_merged),'predvars')
-  if (is.character(predvars)) predvars <- parse(text = predvars)[[1]]
-
-  xlevels <- .getXlevels(attr(model_frame_merged, "terms"), model_frame_merged)
-  if (length(xlevels)==0) xlevels<-NULL
-
-  # separate out response object: --
-  response_idx <- attr(terms(formula_merged),'response')
-  if (response_idx!=0) {
-    response_object <- model_frame_merged[[response_idx]]
-    model_frame_merged <- model_frame_merged[,-response_idx,drop=FALSE]
-    terms_tmp <- delete.response(terms(formula_merged))
-    attr(terms_tmp,'predvars') <- predvars
-    attr(model_frame_merged,'terms') <- terms_tmp
-  } else {
-    response_object <- NULL
-  }
-
-  ## standardize model-frame: --
-  mf_is_numeric_lgl <- purrr::map_lgl(model_frame_merged, is.numeric)
-  standardize_x_arg <- standardize_x
-  standardize_x <- list(center = map_dbl(as.data.frame(model_frame_merged[mf_is_numeric_lgl]), ~0),
-                        scale = map_dbl(as.data.frame(model_frame_merged[mf_is_numeric_lgl]), ~1) )
-
-  if (!is.logical(standardize_x_arg)) {
-    stopifnot(is.list(standardize_x_arg))
-    stopifnot(c('center','scale')%in%names(standardize_x_arg))
-    for (nm in c('center','scale')) {
-      # check for factor names:
-      if ( any( names(standardize_x_arg[[nm]]) %in% names(which(!mf_is_numeric_lgl)) ) )
-        stop(call. = FALSE, "The following variables cannot be standardized because they aren't numeric:",
-                paste0(deparse(names(which(!mf_is_numeric_lgl & does_something_lgl))),collapse="\n"),
-                "\n(Hint: for factors, use contrasts for centering instead.)")
-
-      # add to defaults:
-      standardize_x[[nm]][names(standardize_x_arg[[nm]])] <- standardize_x_arg[[nm]]
-    }
-  } else {
-    if (standardize_x_arg) {
-      standardize_x$center <- map_dbl(model_frame_merged[,mf_is_numeric_lgl,drop=FALSE], mean, na.rm=TRUE)
-      standardize_x$scale <- map_dbl(model_frame_merged[,mf_is_numeric_lgl,drop=FALSE], sd, na.rm=TRUE)
-    }
-  }
-  model_frame_std <- model_frame_merged
-  model_frame_std[names(standardize_x$center)] <- purrr::map(.x = names(standardize_x$center),
-                                                             .f= ~model_frame_std[[.x]]-standardize_x$center[[.x]])
-  model_frame_std[names(standardize_x$scale)] <- purrr::map(.x = names(standardize_x$scale),
-                                                             .f= ~model_frame_std[[.x]]/standardize_x$scale[[.x]])
-
-  ## smarter contrasts: --
-  if (is.null(contrasts)) {
-    contr_full_lgl <-
-      purrr::map_lgl(purrr::map(model_frame_std, attr,'contrasts'), identical, 'contr.full')
-    for (col in names(which(contr_full_lgl)))
-      attr(model_frame_std[[col]],'contrasts') <- contr.full(n = levels(model_frame_std[[col]]), f = model_frame_std[[col]])
-    matrix_contrasts_lgl <- purrr::map_lgl(purrr::map(model_frame_std, attr,'contrasts'),is.matrix)
-    if (any(matrix_contrasts_lgl)&!is.null(xlevels))  # any variables with matrix-contrasts doesn't need an xlev (i think it'd override it)
-      xlevels <- xlevels[intersect(names(xlevels),names(which(!matrix_contrasts_lgl)))]
-
-    contrasts <- purrr::compact(purrr::map(model_frame_std, attr,'contrasts'))
-  }
-
-  ## get model-mat(s): --
-  model_matrix_merged_std <-
-    model.matrix(terms(model_frame_std), data = model_frame_std, contrasts.arg = contrasts)
-  term_mapping <- get_terms_mapping(formula_merged, data, contrasts.arg = contrasts)
-  list_of_model_mats_std <- purrr::map(forms, function(this_form) {
-    this_terms <- terms(this_form)
-    needed_cols <- unique(flatten_chr(term_mapping$term_labels$model_matrix[attr(this_terms,'term.labels')]))
-    if (attr(this_terms,'intercept')==1) needed_cols <- c("(Intercept)", needed_cols)
-    model_matrix_merged_std[,needed_cols,drop=FALSE]
-  })
-
-  # done--
-  out <- list(model_frame_merged= model_frame_merged,
-              list_of_model_mats_std= list_of_model_mats_std,
-              response_object = response_object,
-              standardize_x= standardize_x,
-              predvars = predvars,
-              xlevels = xlevels,
-              contrasts = attr(model_matrix_merged_std,'contrasts'))
-
-  return(out)
-}
 
 #' Get mapping from column names to model-terms and vice versa
 #'
@@ -691,6 +137,13 @@ get_terms_mapping <- function(formula, data, ...) {
 
 }
 
+#' Standardize formula arguments
+#'
+#' @param formula The main formula
+#' @param anc List of others
+#' @param dist_info Information about the distribution
+#'
+#' @return A list of formulas, now matched to the distribution
 standardize_formulae <- function(formula, anc, dist_info) {
   if (is.null(anc)) {
     anc <- structure(names = dist_info$pars[-1], purrr::rerun(length(dist_info$pars[-1]), ~1))
@@ -713,6 +166,12 @@ standardize_formulae <- function(formula, anc, dist_info) {
   return(out)
 }
 
+#' Merge a list of formulae
+#'
+#' @param forms List of formulae/formulas
+#' @param data Data.frame
+#'
+#' @return Single formula, with environment(forms[[1]])
 merge_formulae <- function(forms, data) {
   list_of_term_labels <- purrr::map(purrr::map(forms, terms, data=data), attr, 'term.labels')
   term_labels_unique <- unique(purrr::flatten_chr(list_of_term_labels))
@@ -723,7 +182,7 @@ merge_formulae <- function(forms, data) {
   form_out
 }
 
-#' Get information about a survival distribution for survreg_stan
+#' Get information about a survival distribution
 #'
 #' @param dist Character naming a distribution
 #' @param k For spline-based distributions, the number of knots

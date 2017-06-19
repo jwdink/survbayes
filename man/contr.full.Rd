@@ -4,7 +4,7 @@
 \alias{contr.full}
 \title{Contrasts where each factor-level is explicitly represented}
 \usage{
-contr.full(n, contrasts = TRUE, sparse = FALSE)
+contr.full(n, contrasts = TRUE, sparse = FALSE, f = NULL)
 }
 \arguments{
 \item{n}{a vector of levels for a factor, or the number of levels.}
@@ -12,6 +12,8 @@ contr.full(n, contrasts = TRUE, sparse = FALSE)
 \item{contrasts}{Just set this to TRUE}
 
 \item{sparse}{logical indicating if the result should be sparse}
+
+\item{f}{The actual factor vector}
 }
 \value{
 Contrast-matrix

@@ -4,16 +4,22 @@
 \alias{set_prior}
 \title{Set prior}
 \usage{
-set_prior(parameter = NULL, terms, mu = NULL, sigma = NULL)
+set_prior(parameter = NULL, terms, family = NULL, location = NULL,
+  spread = NULL, fixed = NULL)
 }
 \arguments{
 \item{parameter}{The parameter}
 
-\item{terms}{The terms. Can be a character vector, or the result of \code{dplyr::vars}, which can be convenient for setting the prior on all but some terms.}
+\item{terms}{The terms. Can be a character vector, or the result of \code{dplyr::vars}, which can
+be convenient for setting the prior on all but some terms.}
 
-\item{mu}{A value for mu, to be appled to all `terms` for the `parameter`}
+\item{family}{The family for the prior distribution}
 
-\item{sigma}{A value for sigma, to be appled to all `terms` for the `parameter`}
+\item{location}{A value for location on the distribution.}
+
+\item{spread}{A value for the spread (scale) on the distribution}
+
+\item{fixed}{In the fitting process, should this parameter be fixed at its prior value, or updated?}
 }
 \value{
 An object of class 'prior', to be (optionally inserted into a list with other priors and)

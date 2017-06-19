@@ -4,12 +4,12 @@
 \alias{roy_parm_basis}
 \title{Get the basis matrix for the Royston/Parmar-spline parameterization}
 \usage{
-roy_parm_basis(x, all_knots, scaling_factor)
+roy_parm_basis(x, all_log_knots, scaling_factor)
 }
 \arguments{
 \item{x}{Log-time,}
 
-\item{all_knots}{Knots, including boundary knots, on the scale of log(time)}
+\item{all_log_knots}{Knots, including boundary knots, on the scale of log(time)}
 
 \item{scaling_factor}{A constant which gammas > 1 will be divided by, so that coefficients are on
 similar scales; helpful for optimization/MCMC}
