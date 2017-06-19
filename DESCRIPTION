@@ -22,7 +22,8 @@ Imports:
   purrr (>= 0.2.2),
   tibble (>= 1.2),
   glue (>= 1.0.0),
-  tidysurv (>= 0.1.0)
+  tidysurv (>= 0.1.0),
+  pryr (>= 0.1.2)
 Depends:
   survival (>= 2.40-1)
 Suggests: testthat

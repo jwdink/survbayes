@@ -1,4 +1,15 @@
 
+#' Map the name of a PDF in Stan to its name in R
+#'
+#' @param stan_pdf Chraracter-string with stan name
+#'
+#' @return Character-string with R function name
+#' @export
+stan_to_r_pdf <- function(stan_pdf) {
+  mapper <- c(`normal` = 'dnorm', `double_exponential` = 'dlaplace')
+  mapper[stan_pdf]
+}
+
 #' #' Prediction method for \code{survreg_stan}
 #' #'
 #' #' @param object Of type \code{survreg_stan}

@@ -5,14 +5,15 @@
 \title{Get the log-cumulative hazard for a set of log-times given a Royston/Parmar-spline-survival
 distribution}
 \usage{
-roy_parm_log_cumu_haz(log_time, gamma, all_knots, scaling_factor, b = NULL)
+roy_parm_log_cumu_haz(log_time, gamma, all_log_knots, scaling_factor,
+  b = NULL)
 }
 \arguments{
 \item{log_time}{log(time)}
 
 \item{gamma}{Matrix of coefficients to be multiplied elementwise by basis}
 
-\item{all_knots}{Knots, including boundary knots, on the scale of log(time)}
+\item{all_log_knots}{Knots, including boundary knots, on the scale of log(time)}
 
 \item{scaling_factor}{A constant which gammas > 1 will be divided by, so that coefficients are on
 similar scales; helpful for optimization/MCMC}

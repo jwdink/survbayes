@@ -2,7 +2,7 @@
 % Please edit documentation in R/survbayes-package.R
 \name{get_dist_info}
 \alias{get_dist_info}
-\title{Get information about a survival distribution for survreg_stan}
+\title{Get information about a survival distribution}
 \usage{
 get_dist_info(dist, k = NULL)
 }
@@ -15,5 +15,5 @@ get_dist_info(dist, k = NULL)
 A list with information, functions, etc.
 }
 \description{
-Get information about a survival distribution for survreg_stan
+Get information about a survival distribution
 }
