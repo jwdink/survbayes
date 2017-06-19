@@ -52,12 +52,8 @@ get_prior_df <- function(priors, dist_info, model_components) {
 survreg_map.fit <- function(model_components, df_prior, dist_info, optim_args) {
 
   ## get inits, unroll:
-  inits <- purrr::map(split(df_prior, df_prior$parameter), ~with(.x, structure(location,names=term)))
-  inits <- purrr::map(inits, ~array(.x, dim = length(.x))) # really just needed for stan
-  unrolled_par_all <- purrr::flatten_dbl(inits)
-  unrolled_par_all <- with(df_prior, structure( unrolled_par_all, names = paste0(parameter, "__sep__", term)))
-  fixed_lgl <- purrr::flatten_lgl(purrr::map(split(df_prior, df_prior$parameter),'fixed'))
-  names(fixed_lgl) <- names(unrolled_par_all)
+  unrolled_par_all <- with(df_prior, structure(location, names=paste0(parameter, "__sep__", term)))
+  fixed_lgl <- setNames(df_prior$fixed, nm=names(unrolled_par_all))
   unrolled_par_init <- unrolled_par_all[!fixed_lgl]
 
   ##
@@ -65,11 +61,15 @@ survreg_map.fit <- function(model_components, df_prior, dist_info, optim_args) {
     df_par <- tidyr::separate(tibble::enframe(unrolled_par), col = name, into = c('parameter', 'term'), sep = "__sep__")
     par <- purrr::map(split(df_par, df_par$parameter), ~with(.x, structure(value, names=term)))
     par <- par[dist_info$pars_real]
+    par
   }
 
   ##
   itrans <- map(dist_info$inverse_transforms, get, mode='function')
   get_distribution_params <- function(par, list_of_mm) {
+    par <- par[dist_info$pars_real]
+    list_of_mm <- list_of_mm[dist_info$pars]
+
     list_of_pars_per_obs <- list()
     for (i in seq_along(dist_info$pars)) {
       param_name <- dist_info$pars[[i]]
@@ -590,9 +590,7 @@ predict.survreg_map <- function(object, newdata = NULL, times, starts = NULL, ty
   type <- match.arg(arg = type, choices = c('survival','parameters'))
 
   ## get estimates, unroll:
-  ests <- purrr::map(split(object$res_std, object$res_std$parameter), ~with(.x, structure(estimate,names=term)))
-  unrolled_par_all <- purrr::flatten_dbl(ests)
-  unrolled_par_all <- with(object$df_prior, structure( unrolled_par_all, names = paste0(parameter, "__sep__", term)))
+  unrolled_par_all <- with(object$res_std, structure(estimate, names = paste0(parameter, "__sep__", term)))
 
   ## model-componenets:
   forms_rhs <- purrr::map(object$forms, ~.x[c(1,3)])
@@ -650,9 +648,7 @@ logLik.survreg_map <- function(object, newdata = NULL, ...) {
     newdata <- object$data
 
   ## get estimates, unroll:
-  ests <- purrr::map(split(object$res_std, object$res_std$parameter), ~with(.x, structure(estimate,names=term)))
-  unrolled_par_all <- purrr::flatten_dbl(ests)
-  unrolled_par_all <- with(object$df_prior, structure( unrolled_par_all, names = paste0(parameter, "__sep__", term)))
+  unrolled_par_all <- with(object$res_std, structure(estimate, names = paste0(parameter, "__sep__", term)))
 
   ## model-componenets:
   model_components <-
