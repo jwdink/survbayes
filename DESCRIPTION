@@ -27,5 +27,6 @@ Imports:
 Depends:
   survival (>= 2.40-1)
 Suggests: testthat
-Remotes: jwdink/tidysurv
+Remotes: jwdink/tidysurv, tidyverse/glue
+
 
