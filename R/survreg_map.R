@@ -595,14 +595,23 @@ predict.survreg_map <- function(object, newdata = NULL, times, starts = NULL, ty
   ## model-componenets:
   forms_rhs <- purrr::map(object$forms, ~.x[c(1,3)])
   model_components <-
-    prepare_model_components(forms_rhs, newdata, predvars=object$predvars, object$dist_info, object$standardize_x, object$na.action,
+    prepare_model_components(forms_rhs, newdata, predvars=object$predvars, object$dist_info, object$standardize_x, na.action = na.action,
                              contrasts=object$contrasts, xlev = object$xlevels, drop.unused.levels = FALSE)
 
   df_params<-
     object$predict(unrolled_par = unrolled_par_all, model_mats = model_components$list_of_model_mats_std)
 
-  if (type=='parameters')
-    return(as.matrix(df_params))
+
+  na_dropped_idx <- attr(model_components$model_frame_merged,'na.action')
+  if (type=='parameters') {
+    if (length(na_dropped_idx)>0) {
+      out_padded <- matrix(nrow = nrow(newdata), ncol = ncol(df_params), data = NA_real_)
+      out_padded[-na_dropped_idx,] <- as.matrix(df_params)
+      return(out_padded)
+    } else {
+      return(as.matrix(df_params))
+    }
+  }
 
   if (object$dist_info$spline_dist)
     dfuns <- object$dist_info$distribution_function_factory(all_log_knots = log(object$dist_info$config$all_knots))
@@ -614,7 +623,7 @@ predict.survreg_map <- function(object, newdata = NULL, times, starts = NULL, ty
   if (is.null(starts))
     starts <- rep(0, length(times))
 
-  na_dropped_idx <- attr(model_components$model_frame_merged,'na.action')
+
   if (length(na_dropped_idx)>0) {
     times <- times[-na_dropped_idx]
     starts <- starts[-na_dropped_idx]
@@ -627,10 +636,20 @@ predict.survreg_map <- function(object, newdata = NULL, times, starts = NULL, ty
         surv_at_start <- dfuns$cdf_function(q = starts, gamma = as.matrix(df_params), lower.tail =FALSE)
       else
         surv_at_start <- rep(1, length(surv))
-      return(surv/surv_at_start)
+      out <- surv/surv_at_start
     }
   } else {
     stop(call. = FALSE, "Please report this error to the package maintainer.")
+  }
+
+  # fill for NAs
+  if (length(na_dropped_idx)>0) {
+    out_padded <- numeric(nrow(newdata))
+    out_padded[-na_dropped_idx] <- out
+    out_padded[na_dropped_idx] <- NA_real_
+    return(out_padded)
+  } else {
+    return(out)
   }
 
 }
