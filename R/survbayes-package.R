@@ -326,7 +326,7 @@ contr.full <- function(n, contrasts=TRUE, sparse=FALSE, f = NULL) {
 #'   passed to `priors` arg in `survreg_map`
 #' @export
 set_prior <- function(parameter = NULL, terms, family = NULL, location = NULL, spread = NULL, fixed=NULL) {
-  stopifnot(is.character(terms) || inherits(terms, "col_list") || inherits(terms,"quosures")
+  stopifnot(is.character(terms) || inherits(terms, "col_list") || inherits(terms,"quosures") )
 
   if (is.character(terms)) terms <- paste0("`",terms,"`")
 
